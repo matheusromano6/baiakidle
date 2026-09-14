@@ -1,0 +1,21 @@
+# build artifacts (o workflow gera de novo do zero)
+dist/
+build/
+*.spec
+
+# config/estado pessoal - o repo so precisa do CODIGO pra buildar, nao dos
+# seus dados de jogo/dados sensiveis
+chrome_profile/
+logs/
+routines.json
+settings.json
+
+# painel de mercado - ferramenta pessoal separada (estrategia de precos,
+# banco de dados proprio) - nao faz parte do que e' compartilhado do bot (o
+# zip pro Windows tambem nao leva); o bot roda normal sem essa pasta, so' o
+# botao 'Acompanhar Mercado' fica indisponivel.
+market/
+
+__pycache__/
+*.pyc
+*.log
