@@ -1,8 +1,10 @@
 name: Build macOS app
 
 # Roda sob demanda (botao "Run workflow" na aba Actions do GitHub) ou a cada
-# push que muda algo no repo - builda pros 2 tipos de Mac (Apple Silicon e
-# Intel) numa tacada so, cada um vira um artifact separado pra baixar.
+# push que muda algo no repo - builda pra Apple Silicon (macos-14), unico
+# testado e confirmado funcionando ate agora. O job de Intel (macos-13) foi
+# removido de proposito - nao testado/nao necessario no momento; se precisar
+# de novo (alguem com Mac Intel), e' so' reativar o job com 'os: macos-13'.
 on:
   workflow_dispatch:
   push:
@@ -10,14 +12,7 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - os: macos-14   # Apple Silicon (M1/M2/M3...)
-            arch: arm64
-          - os: macos-13   # Intel
-            arch: x86_64
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-14   # Apple Silicon (M1/M2/M3...)
     steps:
       - uses: actions/checkout@v4
 
@@ -61,6 +56,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: BaiakIdleBot-macos-${{ matrix.arch }}
+          name: BaiakIdleBot-macos-arm64
           path: dist/**
           if-no-files-found: error
