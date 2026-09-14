@@ -9,6 +9,8 @@ IMPORT_TOOLTIP_TEXT = (
     "Importa um arquivo .txt com um chefe por linha, na ordem que devem\n"
     "ser enfrentados - o bot escolhe o PRIMEIRO da lista que estiver\n"
     "pronto no momento, entao a ordem das linhas e a prioridade.\n\n"
+    "Termine a linha com * pra marcar 'precisa de Stone Skin Amulet'\n"
+    "(ex: 'Ferumbras *') - sem o *, o chefe importa sem essa marcacao.\n\n"
     "Linhas em branco sao ignoradas. Nomes que nao baterem com nenhum\n"
     "chefe conhecido (grafia diferente, texto extra na linha etc) sao\n"
     "avisados no final e ficam de fora - o resto da lista importa normal."
@@ -131,16 +133,48 @@ class BossPicker(ctk.CTkToplevel):
             var.trace_add("write", lambda *_, b=boss, v=var: b.__setitem__("enabled", v.get()))
             kills = self.kills.get(boss["name"])
             kills_text = f" — {kills} vitória(s)" if kills is not None else ""
+
+            row = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+            row.pack(fill="x", padx=8, pady=3)
+
             ctk.CTkCheckBox(
-                self.list_frame,
+                row,
                 text=f"{boss['name']} — lvl {boss['level']}{kills_text}",
                 variable=var,
                 fg_color=theme.ACCENT,
                 hover_color=theme.ACCENT_HOVER,
                 text_color=theme.TEXT,
                 font=theme.FONT_BODY,
-            ).pack(anchor="w", padx=8, pady=3)
+            ).pack(side="left")
             self.check_vars.append((boss, var))
+
+            # 'stone_skin': troca o amuleto do EK pro Stone Skin Amulet so' pra
+            # esse chefe (ver equip_boss_amulet em bot.py) - reverte pro que
+            # estava antes assim que o combate termina. So' pros chefes que de
+            # fato precisam de mais resistencia, marcados um por um aqui.
+            ss_var = tk.BooleanVar(value=boss.get("stone_skin", False))
+            ss_var.trace_add("write", lambda *_, b=boss, v=ss_var: b.__setitem__("stone_skin", v.get()))
+            ss_check = ctk.CTkCheckBox(
+                row,
+                text="🛡 Stone Skin",
+                variable=ss_var,
+                fg_color=theme.ACCENT,
+                hover_color=theme.ACCENT_HOVER,
+                text_color=theme.MUTED,
+                font=theme.FONT_BODY,
+                width=1,
+            )
+            ss_check.pack(side="right")
+            _Tooltip(
+                ss_check,
+                "Antes de enfrentar esse chefe, troca o amuleto\n"
+                "(emergencial e padrão) do EK pro Stone Skin Amulet\n"
+                "no Helper - fica trocado ate o FIM de toda a\n"
+                "sequencia de chefes prontos (nao so' desse aqui),\n"
+                "depois volta pro que estava antes. So' funciona se\n"
+                "o item estiver na pouch/mochila; se nao tiver, segue\n"
+                "sem trocar.",
+            )
 
     def import_from_file(self):
         path = filedialog.askopenfilename(
@@ -164,6 +198,11 @@ class BossPicker(ctk.CTkToplevel):
             name = raw_line.strip()
             if not name:
                 continue  # linha em branco - ignora
+            # '*' no final da linha marca 'precisa de Stone Skin Amulet' (ve
+            # IMPORT_TOOLTIP_TEXT) - tira antes de comparar o nome.
+            needs_stone_skin = name.endswith("*")
+            if needs_stone_skin:
+                name = name[:-1].strip()
             key = name.lower()
             if key in seen:
                 continue  # nome repetido no arquivo - ja processado, ignora
@@ -172,6 +211,9 @@ class BossPicker(ctk.CTkToplevel):
                 not_found.append(name)
                 continue
             seen.add(key)
+            # arquivo de importacao e autoritativo pra essa marcacao tambem -
+            # linha sem '*' = nao precisa, mesmo que estivesse marcado antes.
+            boss["stone_skin"] = needs_stone_skin
             matched.append(boss)
 
         if not matched:

@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.9.43"
+VERSION = "4.9.45"
 
 CDP_PORT = 9222
 CDP_URL = f"http://localhost:{CDP_PORT}"
@@ -66,6 +66,14 @@ AUCTION_MODAL_MEMORY = {"first_seen_open": None}
 # a tentar a cada BOSS_RETRY_SECONDS em vez de confiar cegamente numa nova
 # estimativa longa que pode repetir o mesmo problema.
 BOSS_MEMORY = {"next_check": 0.0, "display_next_check": 0.0, "missed_estimate": False}
+
+# Amuleto trocado pro Stone Skin (ver equip_boss_amulet) fica ate o FIM de
+# toda a sequencia de chefes prontos, nao so' do chefe que precisou dele -
+# chefes que nao precisam de 'stone_skin' no meio da sequencia simplesmente
+# nao mexem no amuleto (nem trocam, nem revertem). 'changed' vazio = amuleto
+# ja no padrao (nada trocado); preenchido = precisa reverter pro que guarda
+# aqui assim que a sequencia acabar (ou for interrompida).
+BOSS_AMULET_MEMORY = {"changed": {}}
 
 # Placar de vitorias por chefe ({nome: kills}), lido direto do Bosstiary
 # (Cyclopedia > Bosstiary - o proprio jogo ja conta certinho, nao precisa o
@@ -1537,7 +1545,14 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     avanca caçando de verdade) e assim evita a Loot Pouch encher numa
     sequencia longa de combates. Tasks de guild e 'Separar Loot' ficam de
     fora de proposito - so entram na vez delas depois que os chefes
-    acabarem, respeitando a ordem normal das rotinas."""
+    acabarem, respeitando a ordem normal das rotinas.
+
+    Chefes marcados 'stone_skin' (BossPicker) trocam o amuleto do EK pro
+    Stone Skin Amulet antes de lutar - ver BOSS_AMULET_MEMORY. A troca vale
+    pra SEQUENCIA INTEIRA, nao so pro chefe que precisou dela: um chefe sem
+    'stone_skin' no meio da sequencia nao mexe no amuleto (trocado ou nao).
+    So volta pro que estava antes quando a sequencia termina de verdade
+    (ninguem mais pronto) ou e interrompida (falha num combate)."""
     enabled_names = {b["name"] for b in step["bosses"] if b.get("enabled")}
     if not enabled_names:
         return True
@@ -1604,14 +1619,29 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         )
 
         target_name = None
+        target_needs_stone_skin = False
         for boss in step["bosses"]:
             if boss.get("enabled") and boss["name"] in ready_names:
                 target_name = boss["name"]
+                target_needs_stone_skin = bool(boss.get("stone_skin"))
                 break
 
         if target_name is not None:
+            # pra chefes marcados 'stone_skin' (BossPicker), troca o amuleto do
+            # EK ANTES do combate - ve 'equip_boss_amulet'. FICA trocado ate o
+            # FIM de toda a sequencia (nao reverte a cada chefe): um chefe que
+            # nao precisa de 'stone_skin' no meio da sequencia simplesmente nao
+            # mexe no amuleto, trocado ou nao. So' reverte quando a sequencia
+            # acaba (mais abaixo) ou e interrompida (falha no combate, logo a
+            # seguir) - conforme pedido, pra nao ficar abrindo/fechando o
+            # Helper a cada chefe a toa.
+            if target_needs_stone_skin and not BOSS_AMULET_MEMORY["changed"]:
+                BOSS_AMULET_MEMORY["changed"] = equip_boss_amulet(page, log)
             fought = fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector)
             if not fought:
+                if BOSS_AMULET_MEMORY["changed"]:
+                    revert_boss_amulet(page, log, BOSS_AMULET_MEMORY["changed"])
+                    BOSS_AMULET_MEMORY["changed"] = {}
                 if fought_any:
                     read_bosstiary_kills(page, log)
                 return False
@@ -1629,6 +1659,13 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         break
 
     if target_name is None:
+        # sequencia de chefes acabou (nenhum pronto restante) - se o amuleto
+        # foi trocado pro Stone Skin em algum ponto dela, volta pro que
+        # estava antes AGORA, uma unica vez pra sequencia inteira.
+        if BOSS_AMULET_MEMORY["changed"]:
+            revert_boss_amulet(page, log, BOSS_AMULET_MEMORY["changed"])
+            BOSS_AMULET_MEMORY["changed"] = {}
+
         # nenhum chefe selecionado esta pronto agora. Antes de fechar, desliga o
         # filtro 'Prontos' pra ver o cooldown real de cada um marcado (o jogo
         # mostra tipo '15h 58m' em '.boss-cell-status.cd') e usa o MENOR deles
@@ -1782,6 +1819,123 @@ def fight_one_boss(page, stop_event, log, target_name, row_selector, name_select
     # rotina ate ser fechado. Fecha qualquer coisa assim antes de continuar.
     recover(page, log)
     return True
+
+
+# personagem e preset usados pela troca de amuleto pra chefes dificeis (ver
+# 'stone_skin' no BossPicker/equip_boss_amulet) - fixo por enquanto, so' o EK
+# (Elite Knight - personagem que tanka) precisa disso.
+BOSS_AMULET_CHAR = "EK"
+BOSS_AMULET_ITEM = "Stone Skin Amulet"
+
+
+def open_helper_equip_amulet(page, char_label, preset_label, log):
+    """Abre o Helper (icone 'Helper' no topo, ao lado de Progressao) na aba
+    Equipamento > Amuleto do personagem e preset pedidos ('Hunt'/'Boss'/'PVP')
+    - deixa pronto pra ler/trocar os campos Emergencial/Padrao. CONFIRMADO ao
+    vivo: '#tab-helper' abre o painel, '.bar-char' sao as abas de personagem
+    (uma por vocacao, span com a sigla tipo 'EK'), '.helper-profilebtn' e o
+    Hunt/Boss/PVP, '.helper-menubtn' e o menu esquerdo (inclui 'Equipamento').
+    Cada clique so' acontece se o estado ainda nao for o esperado (idempotente -
+    nao reabre/retroca a toa se ja estiver na tela certa)."""
+    try:
+        if not page.eval_on_selector("#helper-modal", "el => !el.className.includes('hidden')"):
+            page.click("#tab-helper", timeout=3000)
+            time.sleep(0.5)
+        active_char = page.eval_on_selector(".bar-char.active span", "el => el.textContent")
+        if active_char != char_label:
+            page.click(f'.bar-char:has(span:text-is("{char_label}"))', timeout=3000)
+            time.sleep(0.3)
+        active_tab = page.eval_on_selector(".helper-profilebtn.on", "el => el.textContent")
+        if active_tab != preset_label:
+            page.click(f'.helper-profilebtn:has-text("{preset_label}")', timeout=3000)
+            time.sleep(0.3)
+        active_menu = page.eval_on_selector(".helper-menubtn.on", "el => el.textContent")
+        if not active_menu or "Equipamento" not in active_menu:
+            page.click('.helper-menubtn:has-text("Equipamento")', timeout=3000)
+            time.sleep(0.3)
+        return True
+    except Exception as error:
+        log(f"  Erro ao abrir Helper ({char_label}/{preset_label}): {error}")
+        return False
+
+
+def read_helper_amulet(page, field_cls):
+    """Le o nome do item no slot de amuleto 'emer' (Emergencial) ou 'padr'
+    (Padrao) - Helper ja precisa estar aberto na tela certa."""
+    try:
+        return page.eval_on_selector(f'.helper-equipfield:has(.fl.{field_cls}) .helper-equipitem-name', "el => el.textContent")
+    except Exception:
+        return None
+
+
+def set_helper_amulet(page, field_cls, item_name, log):
+    """Troca o amuleto do slot 'emer'/'padr' pro item procurado por nome,
+    usando a busca do picker (mesmo padrao de '.pick-search' ja usado nas
+    Hunts) - CONFIRMADO ao vivo que a lista ('.sp-list.sp-book-list') so'
+    mostra o que ha na pouch/mochila. Retorna True se achou e trocou; False
+    se o item nao esta disponivel agora - nesse caso fecha o picker (Escape)
+    sem mudar nada, do jeito que o usuario pediu."""
+    try:
+        page.click(f'.helper-equipfield:has(.fl.{field_cls}) .helper-equipitem', timeout=3000)
+        time.sleep(0.4)
+        search = page.query_selector('.pick-search')
+        if search is None:
+            return False
+        search.fill(item_name)
+        time.sleep(0.4)
+        count = page.evaluate("() => document.querySelectorAll('.sp-list.sp-book-list .sp-book-row').length")
+        if not count:
+            page.keyboard.press("Escape")
+            return False
+        page.click('.sp-list.sp-book-list .sp-book-row button', timeout=3000)
+        time.sleep(0.3)
+        return True
+    except Exception as error:
+        log(f"  Erro ao trocar amuleto '{field_cls}' pra '{item_name}': {error}")
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return False
+
+
+def equip_boss_amulet(page, log):
+    """Antes de enfrentar um chefe marcado 'stone_skin' no BossPicker, troca
+    o amuleto Emergencial e Padrao do EK (preset Boss, no Helper) pro Stone
+    Skin Amulet, pra aguentar mais dano. So' troca o que de fato achar na
+    pouch/mochila - se nao tiver, mantem o que ja estava (sem reclamar,
+    conforme pedido). Retorna um dict {'emer': nome_original, 'padr':
+    nome_original} - so' com entrada nos slots que REALMENTE mudaram, pra
+    'revert_boss_amulet' saber exatamente o que desfazer depois."""
+    changed = {}
+    if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+        return changed
+    for field_cls in ("emer", "padr"):
+        original = read_helper_amulet(page, field_cls)
+        if original == BOSS_AMULET_ITEM:
+            continue  # ja esta com o item certo - nada a trocar/lembrar
+        if set_helper_amulet(page, field_cls, BOSS_AMULET_ITEM, log):
+            changed[field_cls] = original
+            log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} trocado pra '{BOSS_AMULET_ITEM}' (era '{original}').")
+    page.keyboard.press("Escape")
+    page.keyboard.press("Escape")
+    return changed
+
+
+def revert_boss_amulet(page, log, changed):
+    """Desfaz a troca feita por 'equip_boss_amulet' - volta cada slot que foi
+    de fato alterado pro item que estava antes."""
+    if not changed:
+        return
+    if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+        return
+    for field_cls, name in changed.items():
+        if not name:
+            continue
+        if set_helper_amulet(page, field_cls, name, log):
+            log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} revertido pra '{name}'.")
+    page.keyboard.press("Escape")
+    page.keyboard.press("Escape")
 
 
 def click_guild_task_button(page, sec_selector, card_selector, name_sel, foot_sel, matched_class, task_name, keyword, log, retries=3):
