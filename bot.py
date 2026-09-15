@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.10.4"
+VERSION = "4.10.5"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1337,7 +1337,7 @@ def execute_dom_threshold_click_step(page, step, log):
             pass
 
     try:
-        page.click(open_selector, timeout=3000)
+        click_open_wave(page, open_selector)
         page.click(option_selector, timeout=3000)
         log(f"  '{label}' clicado.")
     except Exception as error:
@@ -1346,6 +1346,23 @@ def execute_dom_threshold_click_step(page, step, log):
 
     step["_below_threshold"] = True
     return True
+
+
+def click_open_wave(page, open_selector, timeout=3000):
+    """Clica o pill que abre o menu de Teleportes (normalmente '#wave-title').
+
+    Em telas/resolucoes mais apertadas, o indicador de progresso da hunt
+    atual ('#wave-dots', ex: 'Wave 10/10 - cacando') pode ficar sobrepondo
+    esse pill e bloquear o clique normal do Playwright ('subtree intercepts
+    pointer events') mesmo com o elemento visivel - confirmado num PC onde
+    isso derrubava tanto 'Enfrentar Chefes' quanto a task da guild. Tenta o
+    clique normal primeiro (mais seguro) e so forca (ignora a checagem de
+    sobreposicao) se esse falhar - se as duas tentativas falharem, quem
+    chamou continua tratando a excecao normalmente (ex: log de erro)."""
+    try:
+        page.click(open_selector, timeout=timeout)
+    except Exception:
+        page.click(open_selector, timeout=timeout, force=True)
 
 
 def clear_hunt_search(page):
@@ -1385,7 +1402,7 @@ def find_and_go_to_hunt(page, hunt_name, open_selector, hunts_selector, row_sele
     'dom_resume_hunt' (volta pra hunt de antes do treino) e 'dom_guild_tasks'
     (vai pra hunt certa de uma task aceita)."""
     try:
-        page.click(open_selector, timeout=3000)
+        click_open_wave(page, open_selector)
         page.click(hunts_selector, timeout=3000)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
@@ -1652,7 +1669,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     fought_any = False
     while not stop_event.is_set():
         try:
-            page.click(open_selector, timeout=3000)
+            click_open_wave(page, open_selector)
             page.click(boss_menu_selector, timeout=3000)
         except Exception as error:
             log(f"  Erro ao abrir a lista de Chefes: {error}")
@@ -2226,7 +2243,7 @@ def execute_dom_guild_tasks_step(page, step, log):
     if pending_task is not None:
         task_name, where_text = pending_task
         try:
-            page.click(open_selector, timeout=3000)
+            click_open_wave(page, open_selector)
             page.click(hunts_selector, timeout=3000)
             # um sleep fixo curto as vezes nao era suficiente pra lista de
             # Hunts terminar de renderizar, fazendo a busca por nome/monstros
@@ -2484,7 +2501,7 @@ def peek_next_hunt(page, current_hunt, open_selector, hunts_selector, row_select
     verdade (ver HUNT_ADVANCE_CONFIRM); quem navega de fato, apos a
     confirmacao, e 'find_and_go_to_hunt'."""
     try:
-        page.click(open_selector, timeout=3000)
+        click_open_wave(page, open_selector)
         page.click(hunts_selector, timeout=3000)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
@@ -2524,7 +2541,7 @@ def start_first_available_hunt(page, open_selector, hunts_selector, row_selector
     nenhuma hunt ativa, ex: parado na cidade. Retorna True se conseguiu
     comecar a cacar em alguma fase."""
     try:
-        page.click(open_selector, timeout=3000)
+        click_open_wave(page, open_selector)
         page.click(hunts_selector, timeout=3000)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
@@ -2582,7 +2599,7 @@ def read_hunt_list(page, log, open_selector="#wave-title", hunts_selector='.tp-o
     proprio jogo mostra, a partir da lista REAL da conta, nao uma lista fixa
     no codigo."""
     try:
-        page.click(open_selector, timeout=3000)
+        click_open_wave(page, open_selector)
         page.click(hunts_selector, timeout=3000)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
@@ -2728,7 +2745,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
     if BESTIARY_MEMORY.get("last_hunt") != current_hunt:
         monsters = []
         try:
-            page.click(open_selector, timeout=3000)
+            click_open_wave(page, open_selector)
             page.click(hunts_selector, timeout=3000)
             page.wait_for_selector(row_selector, timeout=4000)
             clear_hunt_search(page)
@@ -2967,7 +2984,7 @@ def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selec
         # personagens. Traz a aba do jogo de volta pro primeiro plano antes de
         # mexer nela.
         page.bring_to_front()
-        page.click(open_selector, timeout=3000)
+        click_open_wave(page, open_selector)
         page.click(tree_tab_selector, timeout=3000)
         page.wait_for_selector(char_selector, timeout=4000)
     except Exception as error:
@@ -3059,7 +3076,7 @@ def execute_dom_auto_build_step(page, step, log):
 
     try:
         page.bring_to_front()
-        page.click(open_selector, timeout=3000)
+        click_open_wave(page, open_selector)
         page.click(tree_tab_selector, timeout=3000)
         page.wait_for_selector(char_selector, timeout=4000)
     except Exception as error:
