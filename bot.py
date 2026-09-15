@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.10.5"
+VERSION = "4.10.6"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1729,7 +1729,26 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
             # seguir) - conforme pedido, pra nao ficar abrindo/fechando o
             # Helper a cada chefe a toa.
             if target_needs_stone_skin and not BOSS_AMULET_MEMORY["changed"]:
+                # a lista de chefes ('#boss-modal', aberta la em cima pra ler
+                # quem esta pronto) e o Helper sao os dois modais - o jogo nao
+                # deixa abrir o Helper com a lista ainda aberta por cima
+                # (CONFIRMADO ao vivo: o clique na aba EK do Helper ficava
+                # bloqueado pelo proprio '#boss-modal' - "Erro ao abrir
+                # Helper"). Fecha a lista, troca o amuleto, reabre a lista
+                # (com o filtro 'Prontos' de novo) antes de seguir pro combate.
+                page.keyboard.press("Escape")
+                time.sleep(0.3)
                 BOSS_AMULET_MEMORY["changed"] = equip_boss_amulet(page, log)
+                try:
+                    click_open_wave(page, open_selector)
+                    page.click(boss_menu_selector, timeout=3000)
+                    ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
+                    if "on" not in ready_class.split():
+                        page.click(ready_selector, timeout=3000)
+                    time.sleep(0.3)
+                except Exception as error:
+                    log(f"  Erro ao reabrir a lista de Chefes apos trocar o amuleto: {error}")
+                    return False
             fought = fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector)
             if not fought:
                 if BOSS_AMULET_MEMORY["changed"]:
@@ -2002,6 +2021,13 @@ def equip_boss_amulet(page, log):
     'revert_boss_amulet' saber exatamente o que desfazer depois."""
     changed = {}
     if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+        # 'open_helper_equip_amulet' pode ter aberto o painel Helper e falhado
+        # so' num clique seguinte (ex: bloqueado por outro modal ainda aberto
+        # por cima) - fecha de qualquer jeito antes de desistir, senao o
+        # Helper fica aberto por cima de tudo travando o resto do bot ate a
+        # proxima recuperacao.
+        page.keyboard.press("Escape")
+        page.keyboard.press("Escape")
         return changed
     for field_cls in ("emer", "padr"):
         original = read_helper_amulet(page, field_cls)
