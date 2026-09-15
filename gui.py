@@ -663,6 +663,11 @@ class BotGUI:
         if not new_items:
             return
         self.activities_shown = len(items)
+        try:
+            _, bottom = self.activity_box.yview()
+            was_at_bottom = bottom >= 0.999
+        except Exception:
+            was_at_bottom = True
         self.activity_box.configure(state="normal")
         for item in new_items:
             when = datetime.datetime.fromtimestamp(item["timestamp"]).strftime("%H:%M:%S")
@@ -670,7 +675,8 @@ class BotGUI:
         line_count = int(self.activity_box.index("end-1c").split(".")[0])
         if line_count > MAX_LOG_LINES:
             self.activity_box.delete("1.0", f"{line_count - MAX_LOG_LINES}.0")
-        self.activity_box.see("end")
+        if was_at_bottom:
+            self.activity_box.see("end")
         self.activity_box.configure(state="disabled")
 
     @staticmethod
@@ -1109,8 +1115,20 @@ class BotGUI:
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
+    def _log_box_at_bottom(self):
+        """True se o scroll do LOG ja estava no fim antes de inserir linha
+        nova - so' nesse caso vale a pena rolar pra baixo de novo depois.
+        Sem isso, quem tivesse subido pra ler o historico era jogado de volta
+        pro fim toda vez que uma linha nova chegava (a cada 100ms)."""
+        try:
+            _, bottom = self.log_box.yview()
+            return bottom >= 0.999
+        except Exception:
+            return True
+
     def poll_log_queue(self):
         if not self.log_queue.empty():
+            was_at_bottom = self._log_box_at_bottom()
             self.log_box.configure(state="normal")
             while not self.log_queue.empty():
                 message = self.log_queue.get_nowait()
@@ -1139,7 +1157,11 @@ class BotGUI:
             if line_count > MAX_LOG_LINES:
                 self.log_box.delete("1.0", f"{line_count - MAX_LOG_LINES}.0")
 
-            self.log_box.see("end")
+            # so' rola pro fim se quem esta vendo ja estava no fim - senao
+            # quem subiu pra analisar o historico fica lendo em paz, sem ser
+            # jogado pra baixo a cada linha nova.
+            if was_at_bottom:
+                self.log_box.see("end")
             self.log_box.configure(state="disabled")
         self.root.after(100, self.poll_log_queue)
 
