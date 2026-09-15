@@ -11,7 +11,7 @@ import customtkinter as ctk
 
 import bot
 import theme
-from boss_picker import BossPicker
+from boss_picker import BossPicker, _Tooltip
 from attribute_picker import AttributePicker
 from build_config_picker import BuildConfigPicker
 from hunt_picker import HuntPicker
@@ -53,7 +53,8 @@ MATCH_MODE_BY_LABEL = {label: key for key, label in MATCH_MODE_LABELS.items()}
 class BotGUI:
     def __init__(self, root):
         self.root = root
-        root.title(f"BAIAK IDLE BOT  v{bot.VERSION}")
+        self.current_profile = bot.CURRENT_PROFILE  # navegador ativo nesta janela (Chrome por padrao)
+        root.title(f"BAIAK IDLE BOT  v{bot.VERSION}  —  {bot.BROWSER_PROFILES[self.current_profile]['label']}")
         root.geometry("780x640")
         root.configure(fg_color=theme.BG)
         icon_path = os.path.join(bot.resource_dir(), "icon.ico")
@@ -111,6 +112,45 @@ class BotGUI:
         ctk.CTkLabel(
             header, text=f"v{bot.VERSION}", font=theme.FONT_BODY, text_color=theme.MUTED
         ).pack(side="left")
+
+        # Seletor de navegador/conta ativo - decide QUAL routines.json/settings.json
+        # esta em uso (ver bot.BROWSER_PROFILES). Fica separado do botao 'Abrir
+        # Jogo': aqui e' configuracao (qual conta estou editando), la e' acao
+        # (abrir o navegador escolhido aqui).
+        self._profile_key_by_label = {p["label"]: key for key, p in bot.BROWSER_PROFILES.items()}
+        self.browser_selector = ctk.CTkSegmentedButton(
+            header,
+            values=[p["label"] for p in bot.BROWSER_PROFILES.values()],
+            command=self.on_browser_selected,
+            fg_color=theme.PANEL_ALT,
+            selected_color=theme.ACCENT,
+            selected_hover_color=theme.ACCENT_HOVER,
+            unselected_color=theme.PANEL_ALT,
+            text_color=theme.TEXT,
+        )
+        self.browser_selector.set(bot.BROWSER_PROFILES[self.current_profile]["label"])
+        self.browser_selector.pack(side="left", padx=(24, 0))
+
+        # Botao pra abrir uma 2a janela (processo separado) no OUTRO navegador -
+        # fica colado no seletor, ja que e' sobre o mesmo assunto (escolha de
+        # navegador/conta), separado das acoes de Play/Abrir Jogo/etc.
+        new_window_button = ctk.CTkButton(
+            header,
+            text="+",
+            width=28,
+            command=self.open_new_window,
+            fg_color=theme.PANEL_ALT,
+            hover_color=theme.BORDER,
+            text_color=theme.TEXT,
+            font=theme.FONT_HEADER,
+        )
+        new_window_button.pack(side="left", padx=(6, 0))
+        _Tooltip(
+            new_window_button,
+            "Abre uma outra janela do bot, ja no outro navegador\n"
+            "(Chrome/Opera) - pra rodar os dois ao mesmo tempo,\n"
+            "cada um com seu proprio Play/Pause/Stop.",
+        )
 
         self.status_label = ctk.CTkLabel(
             header, text="● PARADO", font=theme.FONT_HEADER, text_color=theme.MUTED
@@ -277,7 +317,68 @@ class BotGUI:
         ).pack(fill="x", padx=20, pady=(16, 6))
 
     def open_browser(self):
+        """So abre/conecta o navegador do perfil ATUALMENTE selecionado (ver
+        seletor de navegador no cabecalho) - escolher qual navegador e uma
+        decisao de configuracao, separada da acao de abrir o jogo."""
         threading.Thread(target=bot.launch_browser, args=(self.log,), daemon=True).start()
+
+    def open_new_window(self):
+        """Abre uma 2a instancia do bot (processo novo, independente) ja no
+        OUTRO navegador. Uma janela so consegue rodar automacao pra UM
+        navegador por vez (o bot.py guarda o estado da automacao em
+        variaveis globais do processo) - pra Chrome e Opera rodarem ao mesmo
+        tempo, cada Play/Pause/Stop precisa ser de um processo separado."""
+        other_profile = next(key for key in bot.BROWSER_PROFILES if key != self.current_profile)
+        if getattr(sys, "frozen", False):
+            args = [sys.executable, "--profile", other_profile]
+        else:
+            args = [sys.executable, os.path.abspath(__file__), "--profile", other_profile]
+        try:
+            subprocess.Popen(args, cwd=bot.resource_dir())
+            self.log(f"Abrindo nova janela no {bot.BROWSER_PROFILES[other_profile]['label']}...")
+        except Exception as error:
+            self.log(f"Erro ao abrir nova janela: {error}")
+
+    def on_browser_selected(self, label):
+        """Chamado pelo seletor de navegador no cabecalho."""
+        profile_key = self._profile_key_by_label.get(label)
+        if profile_key is None or profile_key == self.current_profile:
+            return
+        if self.thread is not None and self.thread.is_alive():
+            self.log(
+                f"Nao troquei pro {label}: pare o bot antes de trocar de navegador."
+            )
+            self.browser_selector.set(bot.BROWSER_PROFILES[self.current_profile]["label"])
+            return
+        self.switch_profile(profile_key)
+
+    def switch_profile(self, profile_key):
+        """Troca o navegador/conta ativo nesta janela: recarrega routines.json/
+        settings.json do perfil escolhido (cada navegador tem os seus, ver
+        bot.BROWSER_PROFILES) e atualiza a tela toda pra refletir. So muda a
+        CONFIGURACAO carregada - nao abre navegador nenhum sozinho (isso e' o
+        botao 'Abrir Jogo')."""
+        bot.set_active_profile(profile_key)
+        self.current_profile = profile_key
+        self.browser_selector.set(bot.BROWSER_PROFILES[profile_key]["label"])
+
+        self.routines = bot.load_routines()
+        self.expanded_routines = set()
+        self.sync_flags_from_routines()
+        self.rebuild_routine_rows()
+
+        self.settings = bot.load_settings()
+        bot.SOUND_MEMORY["enabled"] = self.settings.get("sound_enabled", True)
+        bot.ADVANCE_MEMORY["enabled"] = self.settings.get("auto_advance_hunt", False)
+        bot.DEFAULT_HUNT_MEMORY["name"] = self.settings.get("default_hunt", "")
+        self.advance_var.set(bot.ADVANCE_MEMORY.get("enabled", False))
+        if self.default_hunt_label is not None and self.default_hunt_label.winfo_exists():
+            self.default_hunt_label.configure(text=self.settings.get("default_hunt") or "(nenhuma)")
+        self._refresh_sound_button()
+
+        label = bot.BROWSER_PROFILES[profile_key]["label"]
+        self.root.title(f"BAIAK IDLE BOT  v{bot.VERSION}  —  {label}")
+        self.log(f"Navegador ativo: {label}")
 
     def start_market_server(self):
         """Sobe o servidor do painel de mercado (market/server.py) junto do
@@ -285,17 +386,29 @@ class BotGUI:
         'Acompanhar Mercado' abrir quando o usuario quiser. So faz algo se a
         pasta 'market' existir (ver MARKET_DIR) - builds compartilhadas
         (zip de outros usuarios) nao tem essa pasta, entao o recurso so
-        aparece pra quem tem o market configurado. Falha (ex: porta 8787 ja
-        em uso por um 'python server.py' rodando a parte) so desativa o
-        botao, nao trava o bot."""
+        aparece pra quem tem o market configurado.
+
+        So' UMA instancia do bot deve rodar o poller de mercado de verdade
+        (ver 'Nova Janela' - com 2 janelas abertas, so a 1a consegue). Se a
+        porta ja estiver em uso (2a janela em diante), nao tenta de novo -
+        so aponta o botao 'Acompanhar Mercado' pro servidor que ja esta de
+        pe na 1a janela, e segue sem tentar rodar um 2o poller."""
         if not os.path.isdir(MARKET_DIR):
             return
         try:
             import server as market_server
+        except Exception as error:
+            self.log(f"Painel de mercado nao iniciou: {error}")
+            return
+        try:
             _, url = market_server.start_server(open_browser=False)
             self.market_url = url
+        except OSError:
+            port = market_server.CFG.get("http_port", 8787)
+            self.market_url = f"http://127.0.0.1:{port}/"
+            self.log("Painel de mercado ja esta rodando em outra janela do bot - usando ele.")
         except Exception as error:
-            self.log(f"Painel de mercado nao iniciou (ja rodando a parte?): {error}")
+            self.log(f"Painel de mercado nao iniciou: {error}")
 
     def open_market(self):
         """Pede senha antes de abrir o painel de mercado - trava simples por
@@ -949,7 +1062,10 @@ class BotGUI:
     def _append_to_log_file(self, message):
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
-            filename = datetime.date.today().strftime("bot_%Y-%m-%d.log")
+            # sufixo do navegador no nome - evita 2 instancias (Chrome/Opera)
+            # rodando ao mesmo tempo intercalando linhas no mesmo arquivo.
+            date_part = datetime.date.today().strftime("%Y-%m-%d")
+            filename = f"bot_{self.current_profile}_{date_part}.log"
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
             with open(os.path.join(LOG_DIR, filename), "a", encoding="utf-8") as file:
                 file.write(f"[{timestamp}] {message}\n")
@@ -1077,6 +1193,15 @@ class BotGUI:
 
 
 if __name__ == "__main__":
+    # '--profile chrome'/'--profile opera' - usado pelo botao 'Nova Janela'
+    # pra abrir a 2a instancia ja no navegador certo, sem precisar trocar
+    # o seletor na mao.
+    if "--profile" in sys.argv:
+        idx = sys.argv.index("--profile")
+        requested = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else None
+        if requested in bot.BROWSER_PROFILES:
+            bot.set_active_profile(requested)
+
     root = ctk.CTk()
     BotGUI(root)
     root.mainloop()

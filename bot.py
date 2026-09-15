@@ -11,10 +11,47 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.9.45"
+VERSION = "4.10.4"
 
-CDP_PORT = 9222
-CDP_URL = f"http://localhost:{CDP_PORT}"
+# Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
+# instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
+# (ex: VPN so numa delas), sem uma pisar na porta/perfil/config da outra. O
+# perfil "chrome" usa os mesmos nomes de arquivo de sempre (sem sufixo) pra
+# nao quebrar instalacoes existentes; "opera" usa arquivos proprios.
+BROWSER_PROFILES = {
+    "chrome": {
+        "label": "Google Chrome",
+        "cdp_port": 9222,
+        "profile_dir_name": "chrome_profile",
+        "routines_filename": "routines.json",
+        "settings_filename": "settings.json",
+    },
+    "opera": {
+        "label": "Opera",
+        "cdp_port": 9223,
+        "profile_dir_name": "opera_profile",
+        "routines_filename": "routines_opera.json",
+        "settings_filename": "settings_opera.json",
+    },
+}
+CURRENT_PROFILE = "chrome"  # navegador ativo nesta sessao - trocado via set_active_profile()
+
+
+def set_active_profile(profile):
+    global CURRENT_PROFILE
+    if profile not in BROWSER_PROFILES:
+        raise ValueError(f"Perfil de navegador desconhecido: {profile!r}")
+    CURRENT_PROFILE = profile
+
+
+def cdp_port():
+    return BROWSER_PROFILES[CURRENT_PROFILE]["cdp_port"]
+
+
+def cdp_url():
+    return f"http://localhost:{cdp_port()}"
+
+
 GAME_URL = "https://baiakidle.com/jogar/"
 GAME_URL_PATTERN = "baiakidle"
 BROWSER_LAUNCH_TIMEOUT_SECONDS = 20
@@ -187,26 +224,54 @@ def resource_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-CHROME_PROFILE_DIR = os.path.join(resource_dir(), "chrome_profile")
+def profile_dir():
+    return os.path.join(resource_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["profile_dir_name"])
 
 
-def find_chrome_executable():
-    """Procura o executavel do Chrome nos locais usuais de cada sistema operacional."""
+def find_browser_executable(profile=None):
+    """Procura o executavel do navegador (Chrome ou Opera, conforme o perfil
+    ativo) nos locais usuais de cada sistema operacional."""
+    profile = profile or CURRENT_PROFILE
     system = platform.system()
 
-    if system == "Windows":
-        candidates = [
-            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        ]
-    elif system == "Darwin":
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        ]
+    if profile == "opera":
+        # Opera "normal" e Opera GX sao instalacoes separadas (pastas e
+        # executaveis diferentes) - procura as duas, ambas funcionam igual
+        # via linha de comando (mesmos flags, e Chromium por baixo).
+        if system == "Windows":
+            candidates = [
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Opera\opera.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Opera\launcher.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Opera GX\opera.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Opera GX\launcher.exe"),
+                r"C:\Program Files\Opera\opera.exe",
+                r"C:\Program Files\Opera GX\opera.exe",
+                r"C:\Program Files (x86)\Opera\opera.exe",
+                r"C:\Program Files (x86)\Opera GX\opera.exe",
+            ]
+        elif system == "Darwin":
+            candidates = [
+                "/Applications/Opera.app/Contents/MacOS/Opera",
+                os.path.expanduser("~/Applications/Opera.app/Contents/MacOS/Opera"),
+                "/Applications/Opera GX.app/Contents/MacOS/Opera GX",
+                os.path.expanduser("~/Applications/Opera GX.app/Contents/MacOS/Opera GX"),
+            ]
+        else:
+            candidates = ["/usr/bin/opera", "/usr/bin/opera-gx"]
     else:
-        candidates = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium-browser"]
+        if system == "Windows":
+            candidates = [
+                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]
+        elif system == "Darwin":
+            candidates = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            ]
+        else:
+            candidates = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium-browser"]
 
     for path in candidates:
         if os.path.exists(path):
@@ -216,7 +281,7 @@ def find_chrome_executable():
 
 def is_debug_port_open():
     try:
-        urllib.request.urlopen(f"{CDP_URL}/json/version", timeout=1)
+        urllib.request.urlopen(f"{cdp_url()}/json/version", timeout=1)
         return True
     except (urllib.error.URLError, OSError):
         return False
@@ -245,32 +310,35 @@ def mark_chrome_profile_clean(profile_dir):
 
 
 def launch_browser(log=print):
-    """Abre o Chrome ja apontado pro jogo, com depuracao remota ligada.
+    """Abre o navegador do perfil ativo (CURRENT_PROFILE: Chrome ou Opera) ja
+    apontado pro jogo, com depuracao remota ligada.
 
-    Usa um perfil proprio (CHROME_PROFILE_DIR) porque o Chrome recusa abrir a
+    Usa um perfil proprio (profile_dir()) porque o navegador recusa abrir a
     porta de depuracao no perfil padrao por seguranca. Retorna True se, ao
     final, a porta de depuracao esta respondendo (ja estivesse aberta ou nao).
     """
+    label = BROWSER_PROFILES[CURRENT_PROFILE]["label"]
     if is_debug_port_open():
-        log("Chrome ja esta com a depuracao remota ativa.")
+        log(f"{label} ja esta com a depuracao remota ativa.")
         return True
 
-    chrome_path = find_chrome_executable()
-    if not chrome_path:
+    browser_path = find_browser_executable()
+    if not browser_path:
         log(
-            "Nao encontrei o Chrome instalado automaticamente. Abra manualmente com "
-            f"--remote-debugging-port={CDP_PORT} --user-data-dir=<pasta dedicada> {GAME_URL}"
+            f"Nao encontrei o {label} instalado automaticamente. Abra manualmente com "
+            f"--remote-debugging-port={cdp_port()} --user-data-dir=<pasta dedicada> {GAME_URL}"
         )
         return False
 
-    os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
-    mark_chrome_profile_clean(CHROME_PROFILE_DIR)
-    log(f"Abrindo o Chrome ({chrome_path})...")
+    target_dir = profile_dir()
+    os.makedirs(target_dir, exist_ok=True)
+    mark_chrome_profile_clean(target_dir)
+    log(f"Abrindo o {label} ({browser_path})...")
     subprocess.Popen(
         [
-            chrome_path,
-            f"--remote-debugging-port={CDP_PORT}",
-            f"--user-data-dir={CHROME_PROFILE_DIR}",
+            browser_path,
+            f"--remote-debugging-port={cdp_port()}",
+            f"--user-data-dir={target_dir}",
             "--start-maximized",
             "--no-first-run",
             "--no-default-browser-check",
@@ -282,11 +350,11 @@ def launch_browser(log=print):
     deadline = time.monotonic() + BROWSER_LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if is_debug_port_open():
-            log("Chrome pronto.")
+            log(f"{label} pronto.")
             return True
         time.sleep(0.5)
 
-    log("O Chrome demorou demais para abrir a porta de depuracao.")
+    log(f"O {label} demorou demais para abrir a porta de depuracao.")
     return False
 
 
@@ -463,7 +531,9 @@ DEFAULT_BOSSES = [
     {"name": 'Bakragore', "level": 340, "enabled": False},
 ]
 
-ROUTINES_PATH = os.path.join(resource_dir(), "routines.json")
+def routines_path():
+    return os.path.join(resource_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["routines_filename"])
+
 
 # As rotinas padrao usam passos 'dom_click'/'dom_tier_sort': interagem com a
 # propria pagina (por id/atributo do HTML), nao com print de tela. Isso as deixa
@@ -721,26 +791,31 @@ def slugify(name):
 
 
 def load_routines():
-    if not os.path.exists(ROUTINES_PATH):
+    path = routines_path()
+    if not os.path.exists(path):
         save_routines(DEFAULT_ROUTINES)
-    with open(ROUTINES_PATH, "r", encoding="utf-8") as file:
+    with open(path, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
 def save_routines(routines):
-    with open(ROUTINES_PATH, "w", encoding="utf-8") as file:
+    with open(routines_path(), "w", encoding="utf-8") as file:
         json.dump(routines, file, ensure_ascii=False, indent=2)
 
 
-SETTINGS_PATH = os.path.join(resource_dir(), "settings.json")
+def settings_path():
+    return os.path.join(resource_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["settings_filename"])
+
+
 DEFAULT_SETTINGS = {"sound_enabled": True, "auto_advance_hunt": False, "default_hunt": ""}
 
 
 def load_settings():
-    if not os.path.exists(SETTINGS_PATH):
+    path = settings_path()
+    if not os.path.exists(path):
         return dict(DEFAULT_SETTINGS)
     try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as file:
+        with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
         return {**DEFAULT_SETTINGS, **data}
     except Exception:
@@ -748,7 +823,7 @@ def load_settings():
 
 
 def save_settings(settings):
-    with open(SETTINGS_PATH, "w", encoding="utf-8") as file:
+    with open(settings_path(), "w", encoding="utf-8") as file:
         json.dump(settings, file, ensure_ascii=False, indent=2)
 
 
@@ -761,7 +836,7 @@ def connect_game_page(playwright):
     carregando a aba inicial). Sem retry aqui, essa corrida fazia a conexao
     falhar ('aba do jogo nao encontrada') mesmo com o Chrome funcionando
     perfeitamente - so precisava de mais um instante."""
-    browser = playwright.chromium.connect_over_cdp(CDP_URL)
+    browser = playwright.chromium.connect_over_cdp(cdp_url())
 
     deadline = time.monotonic() + CONNECT_GAME_PAGE_TIMEOUT_SECONDS
     while True:
@@ -773,9 +848,10 @@ def connect_game_page(playwright):
             break
         time.sleep(0.5)
 
+    label = BROWSER_PROFILES[CURRENT_PROFILE]["label"]
     raise RuntimeError(
         f"Aba do jogo nao encontrada (procurando '{GAME_URL_PATTERN}' na URL). "
-        "Abra o jogo no Chrome iniciado com --remote-debugging-port=9222."
+        f"Abra o jogo no {label} iniciado com --remote-debugging-port={cdp_port()}."
     )
 
 

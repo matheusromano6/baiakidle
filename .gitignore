@@ -6,9 +6,12 @@ build/
 # config/estado pessoal - o repo so precisa do CODIGO pra buildar, nao dos
 # seus dados de jogo/dados sensiveis
 chrome_profile/
+opera_profile/
 logs/
 routines.json
+routines_opera.json
 settings.json
+settings_opera.json
 
 # painel de mercado - ferramenta pessoal separada (estrategia de precos,
 # banco de dados proprio) - nao faz parte do que e' compartilhado do bot (o
