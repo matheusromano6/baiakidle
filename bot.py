@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.0"
+VERSION = "4.11.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3529,18 +3529,6 @@ def run_routine(page, routine, stop_event, log, all_routines=None):
             is_disabled = True  # nao achou o elemento - nao arrisca, trata como 'ainda nao pronto'
         if is_disabled:
             return
-
-    # fecha qualquer menu/painel que uma rotina ANTERIOR possa ter deixado
-    # aberto por engano (ex: confirmado ao vivo - Bestiary preso na ultima
-    # criatura bloqueando 'Vender Loot' de rodar depois) - garante que toda
-    # rotina comeca numa tela limpa, sem depender de outra rotina falhar
-    # primeiro pra disparar uma recuperacao. So' 1 Escape (sem sleep de
-    # 0.3s x3 do 'recover()' completo) pra nao pesar em rotinas de
-    # intervalo curto (ex: a cada 1s) - o suficiente pra fechar 1 overlay.
-    try:
-        page.keyboard.press("Escape")
-    except Exception:
-        pass
 
     log(f"Rotina '{routine['name']}' iniciando...")
     for step in routine["steps"]:
