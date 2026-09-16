@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.2"
+VERSION = "4.11.3"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3190,36 +3190,12 @@ def execute_dom_auto_build_step(page, step, log):
     if not pending_configs:
         return True
 
-    try:
-        page.bring_to_front()
-        click_open_wave(page, open_selector)
-        page.click(tree_tab_selector, timeout=3000)
-        page.wait_for_selector(char_selector, timeout=4000)
-    except Exception as error:
-        log(f"  Erro ao abrir Progressao/Build: {error}")
-        page.keyboard.press("Escape")
-        return True
-
-    # 'data-tip' e uma tooltip que so e preenchida depois que o mouse passa
-    # em cima do botao - da hover em cada personagem antes de ler o atributo,
-    # senao fica vazio/None pra quem nunca foi "tocado".
-    vocations_found = []
-    for char_el in page.query_selector_all(char_selector):
-        try:
-            char_el.hover(timeout=2000)
-        except Exception:
-            pass
-        vocation = detect_vocation(char_el.get_attribute("data-tip"))
-        if vocation and vocation not in vocations_found:
-            vocations_found.append(vocation)
-    page.keyboard.press("Escape")
-    page.keyboard.press("Escape")
-
-    for vocation in vocations_found:
-        config = pending_configs.get(vocation)
-        if config is None:
-            continue
-
+    # antes abria a arvore 1a vez SO' pra descobrir quais vocacoes existem na
+    # conta (hover em cada personagem, fechar) e depois abria de novo pra
+    # cada vocacao pendente - 'open_tree_and_select_char' ja faz essa mesma
+    # descoberta (e retorna None se a vocacao nao existir), entao essa 1a
+    # rodada so' duplicava trabalho. Itera direto 'pending_configs'.
+    for vocation, config in pending_configs.items():
         char_el = open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selector, vocation, log)
         if char_el is None:
             page.keyboard.press("Escape")
@@ -3245,21 +3221,20 @@ def execute_dom_auto_build_step(page, step, log):
 
         level = spent + available
 
-        page.keyboard.press("Escape")  # fecha o modal antes de trocar de aba
-        page.keyboard.press("Escape")
-
         log(f"  {vocation}: {available} ponto(s) disponivel(is) (level ~{level}) - consultando build ideal...")
         code = fetch_build_code(page.context, vocation, level, config, log)
         if not code:
             log(f"  Nao consegui obter o codigo de build pra '{vocation}'.")
+            page.keyboard.press("Escape")
+            page.keyboard.press("Escape")
             continue
 
-        char_el = open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selector, vocation, log)
-        if char_el is None:
-            log(f"  Perdi o personagem '{vocation}' ao reabrir a arvore - tenta de novo no proximo ciclo.")
-            page.keyboard.press("Escape")
-            page.keyboard.press("Escape")
-            continue
+        # a arvore continua aberta no personagem certo (nao precisa fechar e
+        # reabrir so' porque 'fetch_build_code' mexeu numa aba SEPARADA, sem
+        # relacao nenhuma com essa) - so traz a aba do jogo de volta pro
+        # primeiro plano (o Chrome throttla renderizacao de abas em 2o plano
+        # enquanto a aba do site otimizador ficou em foco).
+        page.bring_to_front()
 
         try:
             # o botao 'Importar' e um toggle (abre/fecha o campo de colar) - se
