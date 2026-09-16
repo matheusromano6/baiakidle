@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.10.7"
+VERSION = "4.11.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1938,6 +1938,13 @@ def fight_one_boss(page, stop_event, log, target_name, row_selector, name_select
 # (Elite Knight - personagem que tanka) precisa disso.
 BOSS_AMULET_CHAR = "EK"
 BOSS_AMULET_ITEM = "Stone Skin Amulet"
+# % dos 2 selects do card de Amuleto no Helper ('Equipar com vida abaixo de'
+# / 'Restaurar com vida acima de') enquanto o Stone Skin estiver ativo -
+# valores altos (mais agressivos) fazem sentido pra chefe: troca pro
+# emergencial mais cedo (vida ainda alta) e ja volta pro padrao assim que
+# recuperar um pouco, dado que o proprio Stone Skin ja e' o "plano B".
+BOSS_AMULET_EQUIP_PCT = "85"
+BOSS_AMULET_RESTORE_PCT = "90"
 
 
 def open_helper_equip_amulet(page, char_label, preset_label, log):
@@ -1948,14 +1955,24 @@ def open_helper_equip_amulet(page, char_label, preset_label, log):
     (uma por vocacao, span com a sigla tipo 'EK'), '.helper-profilebtn' e o
     Hunt/Boss/PVP, '.helper-menubtn' e o menu esquerdo (inclui 'Equipamento').
     Cada clique so' acontece se o estado ainda nao for o esperado (idempotente -
-    nao reabre/retroca a toa se ja estiver na tela certa)."""
+    nao reabre/retroca a toa se ja estiver na tela certa).
+
+    BUG CONFIRMADO ao vivo (e corrigido): '.bar-char' aparece 2x no DOM com o
+    Helper aberto - a barra de personagem inferior do jogo (title termina em
+    '... clique p/ configurar no Helper', SEMPRE presente, mas fica atras do
+    fundo do proprio modal e bloqueia clique) e as abas de verdade DENTRO do
+    card do Helper ('#helper-modal .im-card'). Sem escopar pro '.im-card', o
+    clique podia mirar a barra de baixo (bloqueada) e travar - ou, pior,
+    'active_char' podia ler o personagem que esta JOGANDO no momento em vez
+    do que o Helper esta de fato mostrando, fazendo achar que ja estava no
+    personagem certo e pular a troca (o Helper abria mas nao alterava nada)."""
     try:
         if not page.eval_on_selector("#helper-modal", "el => !el.className.includes('hidden')"):
             page.click("#tab-helper", timeout=3000)
             time.sleep(0.5)
-        active_char = page.eval_on_selector(".bar-char.active span", "el => el.textContent")
+        active_char = page.eval_on_selector("#helper-modal .im-card .bar-char.active span", "el => el.textContent")
         if active_char != char_label:
-            page.click(f'.bar-char:has(span:text-is("{char_label}"))', timeout=3000)
+            page.click(f'#helper-modal .im-card .bar-char:has(span:text-is("{char_label}"))', timeout=3000)
             time.sleep(0.3)
         active_tab = page.eval_on_selector(".helper-profilebtn.on", "el => el.textContent")
         if active_tab != preset_label:
@@ -2011,15 +2028,60 @@ def set_helper_amulet(page, field_cls, item_name, log):
         return False
 
 
+def read_helper_amulet_thresholds(page):
+    """Le os 2 selects do card de Amuleto no Helper (nessa ordem no HTML):
+    'Equipar com vida abaixo de' (emergencial) e 'Restaurar com vida acima
+    de' (padrao). Retorna (equip_pct, restore_pct) como string (o 'value' de
+    cada <option>), ou (None, None) se nao achar os 2."""
+    try:
+        values = page.eval_on_selector_all(
+            ".helper-equipcard .helper-sel", "els => els.map(el => el.value)"
+        )
+        if len(values) >= 2:
+            return values[0], values[1]
+    except Exception:
+        pass
+    return None, None
+
+
+def set_helper_amulet_thresholds(page, equip_pct, restore_pct, log):
+    """Ajusta os 2 selects de % do card de Amuleto (ver 'read_helper_amulet_thresholds').
+    Se algum valor pedido nao existir como opcao (o jogo pode limitar o range),
+    so' loga e deixa aquele select como estava - nao quebra o resto. Retorna
+    True so' se os 2 de fato foram ajustados (pra quem chama nao logar
+    'ajustada'/'revertida' quando na verdade falhou)."""
+    try:
+        selects = page.query_selector_all(".helper-equipcard .helper-sel")
+    except Exception as error:
+        log(f"  Erro ao achar os campos de % de ativacao do amuleto: {error}")
+        return False
+    if len(selects) < 2:
+        log("  Nao achei os campos de % de ativacao do amuleto.")
+        return False
+    ok = True
+    try:
+        selects[0].select_option(str(equip_pct))
+    except Exception as error:
+        log(f"  Erro ao ajustar 'Equipar com vida abaixo de' pra {equip_pct}%: {error}")
+        ok = False
+    try:
+        selects[1].select_option(str(restore_pct))
+    except Exception as error:
+        log(f"  Erro ao ajustar 'Restaurar com vida acima de' pra {restore_pct}%: {error}")
+        ok = False
+    return ok
+
+
 def equip_boss_amulet(page, log):
     """Antes de enfrentar um chefe marcado 'stone_skin' no BossPicker, troca
     o amuleto Emergencial e Padrao do EK (preset Boss, no Helper) pro Stone
-    Skin Amulet, pra aguentar mais dano. So' troca o que de fato achar na
-    pouch/mochila - se nao tiver, mantem o que ja estava (sem reclamar,
-    conforme pedido). Retorna um dict {'emer': nome_original, 'padr':
-    nome_original} - so' com entrada nos slots que REALMENTE mudaram, pra
-    'revert_boss_amulet' saber exatamente o que desfazer depois."""
-    changed = {}
+    Skin Amulet, pra aguentar mais dano, e deixa os 2 gatilhos de % de vida
+    (ver BOSS_AMULET_EQUIP_PCT/RESTORE_PCT) mais agressivos. So' troca o item
+    que de fato achar na pouch/mochila - se nao tiver, mantem o que ja
+    estava (sem reclamar, conforme pedido). Retorna um dict
+    {'items': {'emer'/'padr': nome_original, ...}, 'thresholds': (equip_pct,
+    restore_pct) originais ou None} - vazio ({}) so' se nem conseguiu abrir o
+    Helper. 'revert_boss_amulet' usa esse dict pra desfazer tudo depois."""
     if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
         # 'open_helper_equip_amulet' pode ter aberto o painel Helper e falhado
         # so' num clique seguinte (ex: bloqueado por outro modal ainda aberto
@@ -2028,31 +2090,46 @@ def equip_boss_amulet(page, log):
         # proxima recuperacao.
         page.keyboard.press("Escape")
         page.keyboard.press("Escape")
-        return changed
+        return {}
+
+    items = {}
     for field_cls in ("emer", "padr"):
         original = read_helper_amulet(page, field_cls)
         if original == BOSS_AMULET_ITEM:
             continue  # ja esta com o item certo - nada a trocar/lembrar
         if set_helper_amulet(page, field_cls, BOSS_AMULET_ITEM, log):
-            changed[field_cls] = original
+            items[field_cls] = original
             log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} trocado pra '{BOSS_AMULET_ITEM}' (era '{original}').")
+
+    orig_equip_pct, orig_restore_pct = read_helper_amulet_thresholds(page)
+    thresholds = None
+    if orig_equip_pct is not None:
+        thresholds = (orig_equip_pct, orig_restore_pct)
+        if set_helper_amulet_thresholds(page, BOSS_AMULET_EQUIP_PCT, BOSS_AMULET_RESTORE_PCT, log):
+            log(f"  % do amuleto do {BOSS_AMULET_CHAR} ajustada pra {BOSS_AMULET_EQUIP_PCT}%/{BOSS_AMULET_RESTORE_PCT}% (era {orig_equip_pct}%/{orig_restore_pct}%).")
+
     page.keyboard.press("Escape")
     page.keyboard.press("Escape")
-    return changed
+    return {"items": items, "thresholds": thresholds}
 
 
 def revert_boss_amulet(page, log, changed):
-    """Desfaz a troca feita por 'equip_boss_amulet' - volta cada slot que foi
-    de fato alterado pro item que estava antes."""
+    """Desfaz a troca feita por 'equip_boss_amulet' - volta cada slot de item
+    que foi de fato alterado pro que estava antes, e as 2 % de ativacao pro
+    que estavam antes tambem."""
     if not changed:
         return
     if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
         return
-    for field_cls, name in changed.items():
+    for field_cls, name in (changed.get("items") or {}).items():
         if not name:
             continue
         if set_helper_amulet(page, field_cls, name, log):
             log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} revertido pra '{name}'.")
+    thresholds = changed.get("thresholds")
+    if thresholds is not None:
+        if set_helper_amulet_thresholds(page, thresholds[0], thresholds[1], log):
+            log(f"  % do amuleto do {BOSS_AMULET_CHAR} revertida pra {thresholds[0]}%/{thresholds[1]}%.")
     page.keyboard.press("Escape")
     page.keyboard.press("Escape")
 
@@ -2475,7 +2552,13 @@ def track_bestiary_monsters(page, monster_names, step, log):
     try:
         page.click(close_selector, timeout=3000)
     except Exception:
-        page.keyboard.press("Escape")
+        # 1 Escape so' as vezes nao bastava aqui - CONFIRMADO ao vivo que uma
+        # falha no ultimo monstro (ex: 'Voltar' da tela de detalhe tambem
+        # falhando) podia deixar telas empilhadas (detalhe + Cyclopedia), e a
+        # tela ficava presa, bloqueando a proxima rotina (ex: Vender Loot).
+        for _ in range(3):
+            page.keyboard.press("Escape")
+            time.sleep(0.2)
 
     return already_complete
 
@@ -3446,6 +3529,18 @@ def run_routine(page, routine, stop_event, log, all_routines=None):
             is_disabled = True  # nao achou o elemento - nao arrisca, trata como 'ainda nao pronto'
         if is_disabled:
             return
+
+    # fecha qualquer menu/painel que uma rotina ANTERIOR possa ter deixado
+    # aberto por engano (ex: confirmado ao vivo - Bestiary preso na ultima
+    # criatura bloqueando 'Vender Loot' de rodar depois) - garante que toda
+    # rotina comeca numa tela limpa, sem depender de outra rotina falhar
+    # primeiro pra disparar uma recuperacao. So' 1 Escape (sem sleep de
+    # 0.3s x3 do 'recover()' completo) pra nao pesar em rotinas de
+    # intervalo curto (ex: a cada 1s) - o suficiente pra fechar 1 overlay.
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
 
     log(f"Rotina '{routine['name']}' iniciando...")
     for step in routine["steps"]:
