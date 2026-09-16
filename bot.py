@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.1"
+VERSION = "4.11.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1049,7 +1049,7 @@ def execute_dom_favorite_hunt_step(page, step, log):
     previous_hunt = FAVORITE_MEMORY.get("last_hunt")
     if previous_hunt and previous_hunt != hunt_name:
         try:
-            page.fill(search_selector, previous_hunt)
+            page.fill(search_selector, previous_hunt, timeout=3000)
             time.sleep(0.4)
             cleared = 0
             for entry in page.query_selector_all(entry_selector):
@@ -1070,7 +1070,7 @@ def execute_dom_favorite_hunt_step(page, step, log):
             log(f"  Erro ao limpar favoritos antigos de '{previous_hunt}': {error}")
 
     try:
-        page.fill(search_selector, hunt_name)
+        page.fill(search_selector, hunt_name, timeout=3000)
         time.sleep(0.4)
     except Exception as error:
         log(f"  Erro ao buscar '{hunt_name}' no Codex: {error}")
@@ -1128,7 +1128,7 @@ def execute_dom_favorite_hunt_step(page, step, log):
         COMPLETION_MEMORY["notified_hunt"] = hunt_name
 
     try:
-        page.fill(search_selector, "")
+        page.fill(search_selector, "", timeout=3000)
     except Exception:
         pass
 
@@ -1282,7 +1282,7 @@ def execute_dom_tier_sort_step(page, step, stop_event, log):
 
         log(f"  Movendo item ({reason}) para o backpack...")
         try:
-            target.click(modifiers=["Shift"])
+            target.click(modifiers=["Shift"], timeout=3000)
         except Exception as error:
             log(f"  Item sumiu antes do clique, tentando o proximo ({error}).")
             continue
@@ -1380,7 +1380,7 @@ def clear_hunt_search(page):
     try:
         search_el = page.query_selector(".pick-search")
         if search_el is not None and (search_el.input_value() or ""):
-            search_el.fill("")
+            search_el.fill("", timeout=3000)
             page.wait_for_timeout(200)
     except Exception:
         pass  # campo de busca pode nao existir em todo lugar - nao trava por isso
@@ -1437,7 +1437,7 @@ def find_and_go_to_hunt(page, hunt_name, open_selector, hunts_selector, row_sele
         go_button = target_row.query_selector(go_selector)
         if go_button is None or not go_button.is_visible():
             # a linha pode precisar ser expandida (clicada) antes do botao 'Cacar' aparecer.
-            target_row.click()
+            target_row.click(timeout=3000)
             time.sleep(0.3)
             go_button = target_row.query_selector(go_selector)
         if go_button is None:
@@ -2010,7 +2010,7 @@ def set_helper_amulet(page, field_cls, item_name, log):
         search = page.query_selector('.pick-search')
         if search is None:
             return False
-        search.fill(item_name)
+        search.fill(item_name, timeout=3000)
         time.sleep(0.4)
         count = page.evaluate("() => document.querySelectorAll('.sp-list.sp-book-list .sp-book-row').length")
         if not count:
@@ -2060,12 +2060,12 @@ def set_helper_amulet_thresholds(page, equip_pct, restore_pct, log):
         return False
     ok = True
     try:
-        selects[0].select_option(str(equip_pct))
+        selects[0].select_option(str(equip_pct), timeout=3000)
     except Exception as error:
         log(f"  Erro ao ajustar 'Equipar com vida abaixo de' pra {equip_pct}%: {error}")
         ok = False
     try:
-        selects[1].select_option(str(restore_pct))
+        selects[1].select_option(str(restore_pct), timeout=3000)
     except Exception as error:
         log(f"  Erro ao ajustar 'Restaurar com vida acima de' pra {restore_pct}%: {error}")
         ok = False
@@ -2398,7 +2398,7 @@ def execute_dom_guild_tasks_step(page, step, log):
                     try:
                         go_button = hunt_row.query_selector(go_selector)
                         if go_button is None or not go_button.is_visible():
-                            hunt_row.click()
+                            hunt_row.click(timeout=3000)
                             time.sleep(0.3)
                             go_button = hunt_row.query_selector(go_selector)
                         if go_button is not None and go_button.is_enabled():
@@ -2505,7 +2505,14 @@ def track_bestiary_monsters(page, monster_names, step, log):
         safe_name = name.strip().replace('"', '\\"')
         exact_selector = f'{cell_selector}[data-name="{safe_name.lower()}"]'
         try:
-            page.fill(search_selector, name)
+            # timeout curto (default do Playwright e' 30s) - CONFIRMADO ao
+            # vivo que sem isso, um unico monstro com o campo momentaneamente
+            # nao preenchivel (ex: transicao de tela de um chefe aparecendo
+            # no meio da hunt) travava o bot INTEIRO por 30s (mais outros 30s
+            # se o proximo monstro da lista desse o mesmo problema) - nada
+            # mais rodava nesse tempo (Vender Loot, Separar Loot etc.), o que
+            # parecia a tela inteira travada.
+            page.fill(search_selector, name, timeout=3000)
         except Exception as error:
             log(f"  Erro ao buscar '{name}' no Bestiary: {error}")
             continue
@@ -2685,7 +2692,7 @@ def start_first_available_hunt(page, open_selector, hunts_selector, row_selector
     try:
         go_button = target_row.query_selector(go_selector)
         if go_button is None or not go_button.is_visible():
-            target_row.click()
+            target_row.click(timeout=3000)
             time.sleep(0.3)
             go_button = target_row.query_selector(go_selector)
         if go_button is not None and go_button.is_enabled():
@@ -3023,8 +3030,8 @@ def fetch_build_code(context, vocation, level, config, log):
     try:
         site_page.goto("https://baiakidle-build-optimizer.pages.dev/", timeout=15000)
         site_page.click(f'.voc-choice:has-text("{vocation}")', timeout=5000)
-        site_page.fill("#level", str(level))
-        site_page.select_option("#buildMode", config.get("mode", "dps"))
+        site_page.fill("#level", str(level), timeout=5000)
+        site_page.select_option("#buildMode", config.get("mode", "dps"), timeout=5000)
         site_page.wait_for_timeout(300)  # o site pode trocar as opcoes de foco ao mudar o modo
 
         focus_value = config.get("focus") or ""
@@ -3032,7 +3039,7 @@ def fetch_build_code(context, vocation, level, config, log):
         if focus_value and focus_el is not None and not focus_el.is_disabled():
             available = [opt.get_attribute("value") for opt in focus_el.query_selector_all("option")]
             if focus_value in available:
-                site_page.select_option("#elementFocus", focus_value)
+                site_page.select_option("#elementFocus", focus_value, timeout=5000)
                 site_page.wait_for_timeout(200)  # pode liberar foco secundario logo em seguida
             else:
                 log(f"  Foco '{focus_value}' nao disponivel pra {vocation}/{config.get('mode', 'dps')} - usando o padrao do site.")
@@ -3046,7 +3053,7 @@ def fetch_build_code(context, vocation, level, config, log):
         if secondary_value and secondary_el is not None and not secondary_el.is_disabled():
             available_sec = [opt.get_attribute("value") for opt in secondary_el.query_selector_all("option")]
             if secondary_value in available_sec:
-                site_page.select_option("#secondaryFocus", secondary_value)
+                site_page.select_option("#secondaryFocus", secondary_value, timeout=5000)
                 site_page.wait_for_timeout(200)  # pode liberar foco terciario logo em seguida
 
                 tertiary_value = config.get("tertiary_focus") or ""
@@ -3054,7 +3061,7 @@ def fetch_build_code(context, vocation, level, config, log):
                 if tertiary_value and tertiary_el is not None and not tertiary_el.is_disabled():
                     available_ter = [opt.get_attribute("value") for opt in tertiary_el.query_selector_all("option")]
                     if tertiary_value in available_ter:
-                        site_page.select_option("#tertiaryFocus", tertiary_value)
+                        site_page.select_option("#tertiaryFocus", tertiary_value, timeout=5000)
                     else:
                         log(f"  Foco terciario '{tertiary_value}' nao disponivel - ignorando.")
             else:
@@ -3062,10 +3069,10 @@ def fetch_build_code(context, vocation, level, config, log):
 
         force_xp = site_page.query_selector("#forceXp")
         if force_xp is not None and not force_xp.is_disabled() and force_xp.is_checked() != bool(config.get("force_xp")):
-            force_xp.click()
+            force_xp.click(timeout=5000)
         force_loot = site_page.query_selector("#forceLoot")
         if force_loot is not None and not force_loot.is_disabled() and force_loot.is_checked() != bool(config.get("force_loot")):
-            force_loot.click()
+            force_loot.click(timeout=5000)
 
         site_page.wait_for_timeout(800)  # recalculo do codigo e client-side, rapido, mas assincrono
         code_el = site_page.query_selector("#buildCode")
