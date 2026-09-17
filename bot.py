@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.4"
+VERSION = "4.11.5"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -719,7 +719,10 @@ DEFAULT_ROUTINES = [
         "name": "Separar Loot",
         "enabled": False,
         "skip_when_training": True,
-        "trigger": {"mode": "automatico"},
+        # 'automatico' cai no TICK_SECONDS do loop principal (1s) - rodava o
+        # tempo todo, quase sempre so pra concluir "nada pra mover". Loot
+        # parado na pouch por 2s a mais nao faz diferenca nenhuma.
+        "trigger": {"mode": "interval", "seconds": 2},
         "steps": [
             {
                 "type": "dom_tier_sort",
@@ -1259,16 +1262,31 @@ def execute_dom_tier_sort_step(page, step, stop_event, log):
     processed = 0
     deadline = time.monotonic() + MAX_REPEAT_SECONDS
     while time.monotonic() < deadline and not stop_event.is_set():
-        target = None
+        # le TODAS as celulas (tier + tooltip) numa unica chamada - a Loot
+        # Pouch pode ter dezenas de itens, e ler cada uma com
+        # 'cell.get_attribute(...)' era uma ida-e-volta pelo protocolo de
+        # depuracao POR ATRIBUTO POR CELULA (ate 2x por item aqui, modo
+        # 'Raridade + Atributo') - mesmo problema ja visto e corrigido nas
+        # listas de Chefes/Hunts. Isso fazia 'Separar Loot' (que roda o
+        # tempo todo) demorar segundos so pra concluir "nada pra mover".
+        cells_data = page.evaluate(
+            """([sel, tiphtmlAttr]) => Array.from(document.querySelectorAll(sel)).map(el => ({
+                tier: el.getAttribute('data-tier'),
+                tiphtml: el.getAttribute(tiphtmlAttr),
+            }))""",
+            [full_selector, tiphtml_attr],
+        )
+
+        target_index = None
         reason = None
-        for cell in page.query_selector_all(full_selector):
-            tier_attr = cell.get_attribute("data-tier")
+        for index, cell_data in enumerate(cells_data):
+            tier_attr = cell_data.get("tier")
             tier = int(tier_attr) if tier_attr is not None else None
             tier_match = tier is not None and tier in enabled_tiers
 
             matched_attr = None
             if match_mode != "rarity_only" and attr_rules:
-                item_attrs = parse_item_attributes(cell.get_attribute(tiphtml_attr))
+                item_attrs = parse_item_attributes(cell_data.get("tiphtml"))
                 matched_attr = next(
                     (name for name, level in item_attrs if name.lower() in attr_rules and level >= attr_rules[name.lower()]),
                     None,
@@ -1288,10 +1306,20 @@ def execute_dom_tier_sort_step(page, step, stop_event, log):
                     reason = f"raridade tier {tier} + atributo '{matched_attr}'"
 
             if is_match:
-                target = cell
+                target_index = index
                 break
-        if target is None:
+        if target_index is None:
             break
+
+        # so busca o ElementHandle de verdade (pra clicar) AGORA que sabemos
+        # qual indice - evita pegar um handle por celula so pra descartar a
+        # maioria. Se a grade mudou entre a leitura e aqui (raro - outra
+        # rotina/o proprio jogo re-renderizou), so tenta de novo no proximo
+        # ciclo em vez de arriscar clicar na celula errada.
+        cells = page.query_selector_all(full_selector)
+        if target_index >= len(cells):
+            break
+        target = cells[target_index]
 
         log(f"  Movendo item ({reason}) para o backpack...")
         try:
