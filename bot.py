@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.3"
+VERSION = "4.11.4"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -155,8 +155,16 @@ SOUND_MEMORY = {"enabled": True}
 # Memoria da rotina de Tasks da Guild: 'previous_hunt' guarda a hunt que
 # estava ativa antes do bot trocar pra caçar uma task (pra poder voltar
 # sozinho quando todas as tasks selecionadas estiverem concluidas/entregues);
-# 'grinding' marca se essa troca ja aconteceu nesta sessao.
-GUILD_TASK_MEMORY = {"previous_hunt": None, "grinding": False}
+# 'grinding' marca se essa troca ja aconteceu nesta sessao. 'grinding_since'
+# (monotonic) marca desde quando - usado como trava de seguranca (ver
+# GUILD_TASK_GRINDING_MAX_SECONDS/ensure_active_hunt): 'grinding' so vira
+# False de novo quando a volta pra hunt padrao realmente da certo, entao uma
+# falha persistente nessa volta (ex: erro pontual de clique) deixava a flag
+# presa e bloqueava TAMBEM o mecanismo generico de 'garantir hunt ativa' -
+# CONFIRMADO como causa real de personagem ficar parado na cidade sem ser
+# redirecionado, mesmo com hunt padrao configurada.
+GUILD_TASK_MEMORY = {"previous_hunt": None, "grinding": False, "grinding_since": None}
+GUILD_TASK_GRINDING_MAX_SECONDS = 20 * 60
 
 # Memoria da rotina de Bestiary: 'last_hunt' evita ficar reabrindo o Cyclopedia
 # toda hora - so refaz a marcacao de rastreio quando a hunt muda de verdade.
@@ -630,7 +638,12 @@ DEFAULT_ROUTINES = [
         "enabled": True,
         "skip_when_training": True,
         "gate_selector": "#sell-all",
-        "trigger": {"mode": "interval", "seconds": 1},
+        # e a rotina mais "pesada" (varios cliques/telas em sequencia -
+        # Progressao > Codex > checkboxes > Entregar x2 > Fechar > Vender) -
+        # loot/codex nao estragam esperando alguns segundos, entao 1s era
+        # caro demais rodando o tempo todo. 3s corta boa parte do custo sem
+        # perda real de responsividade.
+        "trigger": {"mode": "interval", "seconds": 3},
         "steps": [
             {"type": "dom_click", "selector": "#tab-progressao", "label": "Progressao", "timeout": 3},
             {"type": "dom_click", "selector": "#tab-codex", "label": "Codex", "timeout": 3},
@@ -2393,6 +2406,8 @@ def execute_dom_guild_tasks_step(page, step, log):
                 # padrao/anterior, e ficava preso na hunt da task pra sempre.
                 if GUILD_TASK_MEMORY["previous_hunt"] is None:
                     GUILD_TASK_MEMORY["previous_hunt"] = current_hunt
+                if not GUILD_TASK_MEMORY.get("grinding"):
+                    GUILD_TASK_MEMORY["grinding_since"] = time.monotonic()
                 GUILD_TASK_MEMORY["grinding"] = True
                 if hunt_name != current_hunt:
                     try:
@@ -2430,6 +2445,7 @@ def execute_dom_guild_tasks_step(page, step, log):
         if ok:
             GUILD_TASK_MEMORY["previous_hunt"] = None
             GUILD_TASK_MEMORY["grinding"] = False
+            GUILD_TASK_MEMORY["grinding_since"] = None
 
     page.keyboard.press("Escape")
     page.keyboard.press("Escape")
@@ -3431,7 +3447,17 @@ def ensure_active_hunt(page, log):
     'em hunt ativa mas errada'. So cai pra ultima hunt conhecida
     (LAST_KNOWN_HUNT_MEMORY) se nao houver hunt padrao configurada."""
     if GUILD_TASK_MEMORY.get("grinding"):
-        return  # task de guild em andamento tem prioridade - ela mesma resolve a hunt
+        grinding_since = GUILD_TASK_MEMORY.get("grinding_since")
+        stuck = grinding_since is not None and time.monotonic() - grinding_since >= GUILD_TASK_GRINDING_MAX_SECONDS
+        if not stuck:
+            return  # task de guild em andamento tem prioridade - ela mesma resolve a hunt
+        # preso ha tempo demais (ex: a volta pra hunt padrao apos a task
+        # falhou e nunca conseguiu desligar 'grinding' sozinha) - libera aqui
+        # como rede de seguranca, em vez de ficar bloqueado pra sempre.
+        log(f"  'grinding' de task da guild preso ha mais de {GUILD_TASK_GRINDING_MAX_SECONDS // 60}min - liberando.")
+        GUILD_TASK_MEMORY["grinding"] = False
+        GUILD_TASK_MEMORY["previous_hunt"] = None
+        GUILD_TASK_MEMORY["grinding_since"] = None
 
     try:
         current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
