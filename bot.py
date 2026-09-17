@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.5"
+VERSION = "4.11.6"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -648,6 +648,15 @@ DEFAULT_ROUTINES = [
             {"type": "dom_click", "selector": "#tab-progressao", "label": "Progressao", "timeout": 3},
             {"type": "dom_click", "selector": "#tab-codex", "label": "Codex", "timeout": 3},
             {
+                # GARANTE que o campo de busca do Codex esteja vazio antes de
+                # entregar - texto residual (ex: de uma execucao anterior
+                # interrompida no meio) filtra a lista e esconde entradas
+                # que deveriam ser entregues, e a venda roda em seguida sem
+                # ter entregado o que devia.
+                "type": "dom_clear_search",
+                "selector": ".cx-search",
+            },
+            {
                 # favorita no Codex as entradas da hunt que estamos jogando agora,
                 # pra entregar elas primeiro (com prioridade) e nao gastar tempo
                 # com itens de outras hunts antes.
@@ -1018,6 +1027,26 @@ def is_codex_level_one(entry_name, hunt_name):
     if not lower_hunt:
         return False
     return lower_name.endswith(lower_hunt) or lower_name.endswith(f"{lower_hunt} i")
+
+
+def execute_dom_clear_search_step(page, step, log):
+    """Passo tipo 'dom_clear_search': limpa um campo de busca/filtro (ex:
+    '.cx-search' no Codex) se tiver algo digitado. GARANTE que nenhum texto
+    residual (ex: de uma execucao anterior de 'dom_favorite_hunt'
+    interrompida no meio, antes de chegar a limpar sozinha) fique filtrando
+    a lista - CONFIRMADO como causa real de 'Entregar' nao achar entradas
+    que deveriam aparecer (e a venda rodar em seguida sem ter entregado o
+    que devia). Silencioso de proposito (sem log de erro) - o campo pode
+    nao existir ainda nessa tela."""
+    selector = step["selector"]
+    try:
+        field = page.query_selector(selector)
+        if field is not None and (field.input_value() or ""):
+            field.fill("", timeout=3000)
+            page.wait_for_timeout(200)
+    except Exception:
+        pass
+    return True
 
 
 def execute_dom_favorite_hunt_step(page, step, log):
@@ -3525,6 +3554,8 @@ def execute_step(page, step, stop_event, log, all_routines=None):
     step_type = step.get("type")
     if step_type == "dom_click":
         return execute_dom_click_step(page, step, stop_event, log)
+    if step_type == "dom_clear_search":
+        return execute_dom_clear_search_step(page, step, log)
     if step_type == "dom_ensure_checked":
         return execute_dom_ensure_checked_step(page, step, log)
     if step_type == "dom_ensure_active":
@@ -3565,6 +3596,18 @@ def run_routine(page, routine, stop_event, log, all_routines=None):
             is_disabled = True  # nao achou o elemento - nao arrisca, trata como 'ainda nao pronto'
         if is_disabled:
             return
+
+    if routine["id"] == "vender_loot" and all_routines:
+        # GARANTE 'Separar Loot' ANTES de entregar/vender - senao um item que
+        # devia ser separado (guardado no backpack) podia ser vendido antes
+        # de 'Separar Loot' ter a chance de tirar ele da Loot Pouch, ja que
+        # as duas rotinas rodavam so pelo proprio intervalo (sem ordem
+        # garantida entre si). Roda na hora, ignorando o intervalo dela -
+        # 'Separar Loot' e rapida (ve execute_dom_tier_sort_step), custa
+        # pouco rodar um pouco mais que o normal.
+        separar = next((r for r in all_routines if r.get("id") == "separar_loot" and r.get("enabled")), None)
+        if separar is not None:
+            run_routine(page, separar, stop_event, log, all_routines=all_routines)
 
     log(f"Rotina '{routine['name']}' iniciando...")
     for step in routine["steps"]:
