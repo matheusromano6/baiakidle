@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.7"
+VERSION = "4.11.8"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -661,6 +661,15 @@ DEFAULT_ROUTINES = [
                 "selector": ".cx-search",
             },
             {
+                # ordena por 'Mais completo primeiro' - prioriza terminar
+                # entradas quase completas em vez de espalhar 1 item em
+                # varias entradas diferentes ao mesmo tempo.
+                "type": "dom_ensure_select",
+                "selector": ".cx-sort",
+                "value": "fill-desc",
+                "label": "Ordem do Codex (mais completo primeiro)",
+            },
+            {
                 # favorita no Codex as entradas da hunt que estamos jogando agora,
                 # pra entregar elas primeiro (com prioridade) e nao gastar tempo
                 # com itens de outras hunts antes.
@@ -1015,6 +1024,30 @@ def execute_dom_ensure_active_step(page, step, log):
         log(f"  '{label}' ativado.")
     except Exception as error:
         log(f"  Erro ao ativar '{label}': {error}")
+        return False
+    return True
+
+
+def execute_dom_ensure_select_step(page, step, log):
+    """Passo tipo 'dom_ensure_select': garante que um <select> esteja num
+    valor especifico (ex: ordenar o Codex por 'Mais completo primeiro' antes
+    de entregar - entradas quase completas primeiro, entao terminam de
+    verdade em vez de ficar so espalhando 1 item em varias). So mexe se
+    ainda nao estiver nesse valor."""
+    selector = step["selector"]
+    value = step["value"]
+    label = step.get("label", selector)
+    try:
+        el = page.query_selector(selector)
+        if el is None:
+            log(f"  '{label}' nao encontrado.")
+            return False
+        if el.input_value() == value:
+            return True
+        el.select_option(value, timeout=3000)
+        log(f"  '{label}' ajustado.")
+    except Exception as error:
+        log(f"  Erro ao ajustar '{label}': {error}")
         return False
     return True
 
@@ -3564,6 +3597,8 @@ def execute_step(page, step, stop_event, log, all_routines=None):
         return execute_dom_ensure_checked_step(page, step, log)
     if step_type == "dom_ensure_active":
         return execute_dom_ensure_active_step(page, step, log)
+    if step_type == "dom_ensure_select":
+        return execute_dom_ensure_select_step(page, step, log)
     if step_type == "dom_favorite_hunt":
         return execute_dom_favorite_hunt_step(page, step, log)
     if step_type == "dom_watch_favorite":
