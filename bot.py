@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.6"
+VERSION = "4.11.7"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -84,7 +84,11 @@ DANGEROUS_CONFIRM_KEYWORDS = ("desbloquear", "comprar", "compra", "unlock", "buy
 BOSS_FIGHT_MAX_SECONDS = 600  # limite de seguranca esperando a barra de vida do chefe sumir
 BOSS_COOLDOWN_SECONDS = 13 * 3600  # chute de seguranca se nao conseguir ler o cooldown real
 BOSS_BACKOFF_MARGIN_SECONDS = 60  # antecipa um pouco a proxima consulta (o jogo arredonda o texto do cooldown)
-BOSS_RETRY_SECONDS = 5 * 60  # se o horario calculado chegar e AINDA nao tiver ninguem pronto, passa a tentar nesse ritmo
+BOSS_RETRY_SECONDS = 60  # se o horario calculado chegar e AINDA nao tiver ninguem pronto, passa a tentar nesse ritmo
+# (era 5min - CONFIRMADO no log real como causa de um "buraco cego" de ate 5min
+# bem no momento mais valioso: a estimativa calculada podia vencer segundos ANTES
+# da recarga de meia-noite baterem de verdade, entrar no modo de retentativa e so
+# tentar de novo minutos depois dos chefes ja estarem prontos no jogo.)
 
 # Memoria compartilhada entre o passo que manda pro treino e o que volta a cacar:
 # guarda qual hunt estava ativa antes de treinar, pra saber aonde voltar depois.
