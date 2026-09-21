@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.8"
+VERSION = "4.11.9"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -2327,7 +2327,14 @@ def execute_dom_guild_tasks_step(page, step, log):
     # visitada, ex: Membros) - precisa garantir a aba Tasks ativa ANTES de
     # esperar a secao 'Diárias' aparecer, senao ela nunca aparece (o
     # wait_for_selector abaixo vivia estourando o prazo por causa disso).
-    tasks_tab_el = page.query_selector(tasks_tab_selector)
+    # espera a aba aparecer em vez de checar na hora - o painel ainda esta
+    # renderizando logo apos abrir, e um 'nao achou' instantaneo era tratado
+    # como "guild sem tasks" (log real: 5 checagens seguidas de 30min cada,
+    # ~3h sem mexer nas tasks, com tasks ja aceitas pendentes).
+    try:
+        tasks_tab_el = page.wait_for_selector(tasks_tab_selector, timeout=3000, state="attached")
+    except Exception:
+        tasks_tab_el = None
     if tasks_tab_el is None:
         # a guild pode nao ter tasks liberadas ainda (nivel insuficiente etc)
         # - nao e um erro de verdade, so nao ha nada pra fazer agora.
@@ -2500,8 +2507,15 @@ def execute_dom_guild_tasks_step(page, step, log):
                 # padrao/anterior, e ficava preso na hunt da task pra sempre.
                 if GUILD_TASK_MEMORY["previous_hunt"] is None:
                     GUILD_TASK_MEMORY["previous_hunt"] = current_hunt
-                if not GUILD_TASK_MEMORY.get("grinding"):
-                    GUILD_TASK_MEMORY["grinding_since"] = time.monotonic()
+                # 'grinding_since' e' um HEARTBEAT: renovado a CADA vez que a
+                # rotina confirma que ainda ha task pendente (roda de 60 em
+                # 60s enquanto 'grinding') - a trava de seguranca de
+                # ensure_active_hunt so' dispara se a rotina PARAR de
+                # confirmar isso por GUILD_TASK_GRINDING_MAX_SECONDS. Antes
+                # contava desde o INICIO do grind, e uma task longa (ex:
+                # 2000+ kills) era arrancada no meio aos 20min - bug real
+                # visto no log (tasks aceitas e nunca concluidas).
+                GUILD_TASK_MEMORY["grinding_since"] = time.monotonic()
                 GUILD_TASK_MEMORY["grinding"] = True
                 if hunt_name != current_hunt:
                     try:
