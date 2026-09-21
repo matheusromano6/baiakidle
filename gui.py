@@ -500,13 +500,19 @@ class BotGUI:
                 except Exception as error:
                     self.log(f"  Erro ao capturar lista de Hunts: {error}")
                     hunts = []
+                if hunts:
+                    # guarda a lista - da proxima vez abre na hora, sem ir ao jogo
+                    self.settings["hunts_cache"] = hunts
+                    bot.save_settings(self.settings)
+                else:
+                    hunts = self.settings.get("hunts_cache") or []  # falhou: mantem a salva
                 callback(hunts)
 
             threading.Thread(target=worker, daemon=True).start()
 
         HuntPicker(
             self.root,
-            [],
+            self.settings.get("hunts_cache") or [],
             self.settings.get("default_hunt", ""),
             on_saved=on_saved,
             on_refresh=on_refresh,
@@ -881,7 +887,21 @@ class BotGUI:
                         bot.BOSS_MEMORY["missed_estimate"] = False
                         self.rebuild_routine_rows()
 
-                    BossPicker(self.root, step.get("bosses", []), on_saved=on_saved, kills=bot.BOSS_KILLS_MEMORY)
+                    def on_refresh(callback):
+                        def worker():
+                            try:
+                                found = bot.fetch_boss_list(log=self.log)
+                            except Exception as error:
+                                self.log(f"  Erro ao capturar lista de Chefes: {error}")
+                                found = []
+                            callback(found)
+
+                        threading.Thread(target=worker, daemon=True).start()
+
+                    BossPicker(
+                        self.root, step.get("bosses", []), on_saved=on_saved,
+                        kills=bot.BOSS_KILLS_MEMORY, on_refresh=on_refresh,
+                    )
 
                 enabled_count = sum(1 for b in step.get("bosses", []) if b.get("enabled"))
                 ctk.CTkButton(

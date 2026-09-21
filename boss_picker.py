@@ -64,12 +64,13 @@ class BossPicker(ctk.CTkToplevel):
     primeiro da lista e escolhido. Pode ser reordenada importando um .txt
     (botao 'Importar', ve o tooltip)."""
 
-    def __init__(self, master, bosses, on_saved=None, kills=None):
+    def __init__(self, master, bosses, on_saved=None, kills=None, on_refresh=None):
         super().__init__(master)
         self.title("Escolher chefes")
         self.geometry("420x600")
         self.configure(fg_color=theme.BG)
         self.on_saved = on_saved
+        self.on_refresh = on_refresh
 
         # sem isso a janela pode abrir atras da principal em vez de por cima.
         self.transient(master)
@@ -101,6 +102,23 @@ class BossPicker(ctk.CTkToplevel):
         )
         import_button.pack(side="left")
         _Tooltip(import_button, IMPORT_TOOLTIP_TEXT)
+        self.refresh_button = ctk.CTkButton(
+            search_row,
+            text="Atualizar",
+            width=80,
+            command=self.refresh,
+            fg_color=theme.PANEL_ALT,
+            hover_color=theme.BORDER,
+            text_color=theme.TEXT,
+            font=theme.FONT_BODY,
+        )
+        self.refresh_button.pack(side="left", padx=(6, 0))
+        _Tooltip(
+            self.refresh_button,
+            "Busca no jogo chefes NOVOS (ex: apos uma atualizacao) e\n"
+            "adiciona no fim da lista, desmarcados. A lista salva e' usada\n"
+            "sempre - so' vai ao jogo quando voce clica aqui.",
+        )
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color=theme.PANEL, corner_radius=8)
         self.list_frame.pack(fill="both", expand=True, padx=12, pady=6)
@@ -175,6 +193,41 @@ class BossPicker(ctk.CTkToplevel):
                 "o item estiver na pouch/mochila; se nao tiver, segue\n"
                 "sem trocar.",
             )
+
+    def refresh(self):
+        if not self.on_refresh:
+            return
+        self.refresh_button.configure(state="disabled", text="Buscando...")
+        self.on_refresh(self.on_refreshed)
+
+    def on_refreshed(self, found):
+        # chamado de outra thread (a busca conecta no navegador) - aplica na thread da UI.
+        def apply():
+            self.refresh_button.configure(state="normal", text="Atualizar")
+            if not found:
+                messagebox.showwarning("Atualizar lista", "Nao consegui ler a lista de chefes do jogo.", parent=self)
+                return
+            known = {b["name"]: b for b in self.bosses}
+            new_names = []
+            for entry in found:
+                existing = known.get(entry["name"])
+                if existing is None:
+                    self.bosses.append({"name": entry["name"], "level": entry.get("level") or 0, "enabled": False})
+                    new_names.append(entry["name"])
+                elif entry.get("level") is not None:
+                    existing["level"] = entry["level"]
+            self.render_list()
+            if new_names:
+                messagebox.showinfo(
+                    "Atualizar lista",
+                    f"{len(new_names)} chefe(s) novo(s) adicionado(s) no fim da lista (desmarcados):\n\n"
+                    + "\n".join(new_names) + "\n\nClique em Salvar pra guardar.",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo("Atualizar lista", "Nenhum chefe novo - a lista ja esta atualizada.", parent=self)
+
+        self.after(0, apply)
 
     def import_from_file(self):
         path = filedialog.askopenfilename(

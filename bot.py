@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.11.9"
+VERSION = "4.12.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -468,6 +468,7 @@ DEFAULT_BOSSES = [
     {"name": 'Brain Head', "level": 70, "enabled": False},
     {"name": 'Neferi the Spy', "level": 70, "enabled": False},
     {"name": 'Sister Hetai', "level": 70, "enabled": False},
+    {"name": 'Rakesh Moonfang', "level": 70, "enabled": False},
     {"name": 'Scarlett Etzel', "level": 80, "enabled": False},
     {"name": 'The Time Guardian', "level": 80, "enabled": False},
     {"name": 'Dragonking Zyrtarch', "level": 80, "enabled": False},
@@ -475,6 +476,7 @@ DEFAULT_BOSSES = [
     {"name": 'Mounted Thorn Knight', "level": 80, "enabled": False},
     {"name": 'Foreshock', "level": 80, "enabled": False},
     {"name": 'Sir Nictros', "level": 80, "enabled": False},
+    {"name": 'The Moonsnow Magnolia', "level": 80, "enabled": False},
     {"name": 'Megasylvan Yselda', "level": 90, "enabled": False},
     {"name": 'Obujos', "level": 90, "enabled": False},
     {"name": 'Drume', "level": 90, "enabled": False},
@@ -541,6 +543,9 @@ DEFAULT_BOSSES = [
     {"name": 'Vemiath', "level": 240, "enabled": False},
     {"name": 'Goshnar\'s Megalomania', "level": 240, "enabled": False},
     {"name": 'Bakragore', "level": 340, "enabled": False},
+    {"name": 'Mimar Haffar', "level": 360, "enabled": False},
+    {"name": 'Maior Domus', "level": 360, "enabled": False},
+    {"name": 'Phosphorus', "level": 400, "enabled": False},
 ]
 
 def routines_path():
@@ -845,7 +850,7 @@ def settings_path():
     return os.path.join(resource_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["settings_filename"])
 
 
-DEFAULT_SETTINGS = {"sound_enabled": True, "auto_advance_hunt": False, "default_hunt": ""}
+DEFAULT_SETTINGS = {"sound_enabled": True, "auto_advance_hunt": False, "default_hunt": "", "hunts_cache": []}
 
 
 def load_settings():
@@ -2881,6 +2886,58 @@ def fetch_hunt_names(log=print):
     with sync_playwright() as playwright:
         page = connect_game_page(playwright)
         return read_hunt_list(page, log)
+
+
+def read_boss_list(page, log, open_selector="#wave-title", boss_menu_selector='.tp-opt[data-tp="boss"]',
+                   ready_selector=".pick-leanbtn.ready", row_selector=".boss-cell",
+                   name_selector=".boss-cell-name", meta_selector=".boss-cell-meta"):
+    """Abre a lista de Chefes do jogo e le TODOS (nome + level), na ordem da
+    tela - usado pelo botao 'Atualizar lista' do BossPicker pra descobrir
+    chefes novos apos uma atualizacao do jogo. Desliga o filtro 'Prontos' se
+    estiver ligado (senao so listaria os prontos agora)."""
+    opened = False
+    last_error = None
+    for _attempt in range(2):  # o menu de Teleportes as vezes ainda nao abriu no 1o clique
+        try:
+            click_open_wave(page, open_selector)
+            page.click(boss_menu_selector, timeout=3000)
+            page.wait_for_selector(row_selector, timeout=4000)
+            ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
+            if "on" in ready_class.split():
+                page.click(ready_selector, timeout=3000)
+                page.wait_for_timeout(300)
+            opened = True
+            break
+        except Exception as error:
+            last_error = error
+            for _ in range(3):
+                page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+    if not opened:
+        log(f"  Erro ao abrir a lista de Chefes: {last_error}")
+        return []
+
+    raw = page.evaluate(
+        """([rowSel, nameSel, metaSel]) => Array.from(document.querySelectorAll(rowSel)).map(row => {
+            const name = row.querySelector(nameSel)?.textContent?.trim() || '';
+            const m = (row.querySelector(metaSel)?.textContent || '').match(/lvl\\s*(\\d+)/i);
+            return {name, level: m ? parseInt(m[1], 10) : null};
+        })""",
+        [row_selector, name_selector, meta_selector],
+    )
+    for _ in range(3):
+        page.keyboard.press("Escape")
+    return [b for b in raw if b["name"]]
+
+
+def fetch_boss_list(log=print):
+    """Conecta no navegador (abrindo se precisar) so pra ler a lista de
+    Chefes e devolver - usado pelo botao 'Atualizar lista' do BossPicker."""
+    if not launch_browser(log):
+        return []
+    with sync_playwright() as playwright:
+        page = connect_game_page(playwright)
+        return read_boss_list(page, log)
 
 
 def finish_completed_bestiary_tracks(page, step, log):
