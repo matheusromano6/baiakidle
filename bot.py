@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.12.0"
+VERSION = "4.12.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3466,6 +3466,13 @@ def dismiss_blocking_overlays(page, log):
     dessas telas, e nada mais rodou ate reiniciar). Roda a CADA TICK do loop
     principal, ANTES de qualquer rotina.
 
+    - Nota de atualizacao do jogo ('Novidades', '#changelog-modal'): aparece
+      sozinha quando o jogo lanca uma atualizacao enquanto o bot ja esta
+      rodando - CONFIRMADO ao vivo travando tudo (mesmo efeito do Mercado
+      esquecido aberto: cobre a tela e todo clique por baixo falha) ate
+      alguem fechar na mao. So clicar em '#changelog-modal-close' ('Fechar')
+      - nao precisa de periodo de graca tipo o Mercado, ninguem "usa" essa
+      tela de proposito por muito tempo.
     - Resumo de treino offline ('Bem-vindo de volta', '#offline-modal'): so
       clicar em '#offline-modal-close' (botao 'Coletar').
     - Conexao perdida ('#conn-overlay' - confirmado lendo o bundle JS do
@@ -3487,6 +3494,15 @@ def dismiss_blocking_overlays(page, log):
     Retorna True se algum desses overlays estava visivel agora - quem chama
     deve pular o resto do tick nesse caso (a pagina pode estar recarregando
     ou o modal pode ter coberto os elementos que uma rotina tentaria usar)."""
+    try:
+        changelog_close = page.query_selector("#changelog-modal-close")
+        if changelog_close is not None and changelog_close.is_visible():
+            changelog_close.click(timeout=3000)
+            log("  Fechei a tela de novidades/atualizacao do jogo.")
+            return True
+    except Exception as error:
+        log(f"  Erro ao fechar a tela de novidades: {error}")
+
     try:
         offline_close = page.query_selector("#offline-modal-close")
         if offline_close is not None and offline_close.is_visible():
