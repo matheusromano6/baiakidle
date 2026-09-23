@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.12.2"
+VERSION = "4.12.3"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3495,6 +3495,28 @@ def execute_dom_auto_build_step(page, step, log):
     return True
 
 
+_CONNECTION_DEAD_SIGNATURES = (
+    "Connection closed",
+    "Target page, context or browser has been closed",
+    "Target closed",
+    "Browser has been closed",
+)
+
+
+def is_connection_dead_error(error):
+    """True se o erro indica que a conexao com o navegador (ou o processo
+    driver do Playwright em si) morreu de vez - nao um problema pontual de
+    UM elemento/tela isolado. CONFIRMADO ao vivo como causa real do bot
+    ficando 'zumbi': praticamente toda checagem/rotina tem seu proprio
+    try/except que so loga o erro e segue (de proposito - pra um problema
+    pontual nao derrubar a sessao inteira), entao um erro desses nunca
+    chegava ate o codigo de reconexao em run() - o bot ficava preso
+    reportando o mesmo erro (ou simplesmente parava de logar, travado numa
+    chamada que nunca retornava) ate alguem reiniciar na mao."""
+    text = str(error)
+    return any(sig in text for sig in _CONNECTION_DEAD_SIGNATURES)
+
+
 def dismiss_blocking_overlays(page, log):
     """Fecha telas que travam o jogo INTEIRO se aparecerem - sem isso o bot
     para de vender/separar loot e seguir as rotinas ate alguem fechar na mao
@@ -3537,6 +3559,8 @@ def dismiss_blocking_overlays(page, log):
             log("  Fechei a tela de novidades/atualizacao do jogo.")
             return True
     except Exception as error:
+        if is_connection_dead_error(error):
+            raise
         log(f"  Erro ao fechar a tela de novidades: {error}")
 
     try:
@@ -3546,6 +3570,8 @@ def dismiss_blocking_overlays(page, log):
             log("  Fechei o resumo de treino offline ('Bem-vindo de volta').")
             return True
     except Exception as error:
+        if is_connection_dead_error(error):
+            raise
         log(f"  Erro ao fechar o resumo de treino offline: {error}")
 
     try:
@@ -3557,6 +3583,8 @@ def dismiss_blocking_overlays(page, log):
                 retry_btn.click(timeout=3000)
             return True
     except Exception as error:
+        if is_connection_dead_error(error):
+            raise
         log(f"  Erro ao lidar com a tela de conexao perdida: {error}")
 
     try:
@@ -3584,6 +3612,8 @@ def dismiss_blocking_overlays(page, log):
         else:
             AUCTION_MODAL_MEMORY["first_seen_open"] = None
     except Exception as error:
+        if is_connection_dead_error(error):
+            raise
         log(f"  Erro ao lidar com o Mercado/leilao: {error}")
 
     return False
@@ -3626,7 +3656,9 @@ def return_to_default_hunt(page, log, force=False):
 
     try:
         current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
-    except Exception:
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
         return True
     if current_hunt:
         LAST_KNOWN_HUNT_MEMORY["name"] = current_hunt
@@ -3678,7 +3710,9 @@ def ensure_active_hunt(page, log):
 
     try:
         current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
-    except Exception:
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
         return
 
     if current_hunt:
@@ -3922,6 +3956,8 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                             stop_event.wait(TICK_SECONDS)
                             continue
                     except Exception as error:
+                        if is_connection_dead_error(error):
+                            raise
                         log(f"Erro ao checar telas bloqueantes: {error}")
 
                     # roda sempre, nao so quando uma rotina especifica estiver
@@ -3932,6 +3968,8 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                         try:
                             ensure_active_hunt(page, log)
                         except Exception as error:
+                            if is_connection_dead_error(error):
+                                raise
                             log(f"Erro ao garantir hunt ativa: {error}")
                         next_hunt_check = time.monotonic() + HUNT_CHECK_INTERVAL_SECONDS
 
@@ -3946,6 +3984,8 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                             try:
                                 reload_game_page(page, log)
                             except Exception as error:
+                                if is_connection_dead_error(error):
+                                    raise
                                 log(f"Erro ao recarregar a pagina do jogo: {error}")
                             next_page_reload = time.monotonic() + PAGE_RELOAD_INTERVAL_SECONDS
 
@@ -3981,6 +4021,8 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                             try:
                                 run_routine(page, routine, stop_event, log, all_routines=routines)
                             except Exception as error:
+                                if is_connection_dead_error(error):
+                                    raise
                                 log(f"Erro na rotina '{routine['name']}': {error}")
                                 recover(page, log)
                             last_run[routine["id"]] = time.monotonic()
