@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.12.1"
+VERSION = "4.12.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -833,12 +833,48 @@ def slugify(name):
     return slug or "rotina"
 
 
+def _ensure_mandatory_vender_loot_steps(routines):
+    """Migra um 'routines.json' salvo por uma versao anterior pra sempre ter
+    os passos 'limpar busca do Codex' e 'ordenar por mais completo primeiro'
+    na rotina de venda - isso e' padrao do bot, nao uma configuracao que
+    cada instalacao/PC precisa ganhar na mao (ou que uma edicao manual de
+    arquivo, feita com o bot ja rodando, pode acabar apagando ao salvar por
+    cima). Insere o que faltar logo apos abrir o Codex. Retorna True se
+    mudou algo, pra quem chamar saber que precisa salvar de volta."""
+    routine = next((r for r in routines if r.get("id") == "vender_loot"), None)
+    if routine is None:
+        return False
+    steps = routine.setdefault("steps", [])
+    codex_idx = next((i for i, s in enumerate(steps) if s.get("selector") == "#tab-codex"), None)
+    if codex_idx is None:
+        return False
+
+    changed = False
+    insert_at = codex_idx + 1
+    if not any(s.get("type") == "dom_clear_search" for s in steps):
+        steps.insert(insert_at, {"type": "dom_clear_search", "selector": ".cx-search"})
+        insert_at += 1
+        changed = True
+    if not any(s.get("type") == "dom_ensure_select" and s.get("selector") == ".cx-sort" for s in steps):
+        steps.insert(insert_at, {
+            "type": "dom_ensure_select",
+            "selector": ".cx-sort",
+            "value": "fill-desc",
+            "label": "Ordem do Codex (mais completo primeiro)",
+        })
+        changed = True
+    return changed
+
+
 def load_routines():
     path = routines_path()
     if not os.path.exists(path):
         save_routines(DEFAULT_ROUTINES)
     with open(path, "r", encoding="utf-8") as file:
-        return json.load(file)
+        routines = json.load(file)
+    if _ensure_mandatory_vender_loot_steps(routines):
+        save_routines(routines)
+    return routines
 
 
 def save_routines(routines):
