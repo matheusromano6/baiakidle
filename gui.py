@@ -17,7 +17,7 @@ from build_config_picker import BuildConfigPicker
 from hunt_picker import HuntPicker
 
 MAX_LOG_LINES = 500
-LOG_DIR = os.path.join(bot.resource_dir(), "logs")
+LOG_DIR = os.path.join(bot.data_dir(), "logs")
 
 # painel de mercado (market/server.py) roda junto do bot, na mesma janela -
 # antes eram 2 processos separados que o usuario tinha que abrir na mao cada

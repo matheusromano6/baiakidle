@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.12.3"
+VERSION = "4.12.4"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -236,8 +236,29 @@ def resource_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def data_dir():
+    """Pasta onde o bot GRAVA seus proprios dados (routines/settings/perfil
+    do navegador/logs) - separada de onde o executavel/app esta instalado.
+
+    No Mac, arrastar o app pra /Applications (o normal) deixa 'resource_dir()'
+    apontando pra la - e um usuario comum NAO tem permissao de escrita
+    nessa pasta sem autenticar como administrador. CONFIRMADO como causa
+    real do app 'nao abrir' (crashava tentando criar routines.json ali,
+    sem terminal nenhum pra mostrar o erro) e so funcionar rodando via
+    Terminal com sudo. Usa a pasta padrao do macOS pra dados de app por
+    usuario (~/Library/Application Support/<nome>), sempre gravavel sem
+    precisar de admin. Windows e modo dev continuam usando a pasta do
+    proprio executavel/script, como sempre foi (nunca teve esse problema
+    la - o instalador nao manda o usuario pra uma pasta protegida)."""
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support/BaiakIdleBot")
+        os.makedirs(base, exist_ok=True)
+        return base
+    return resource_dir()
+
+
 def profile_dir():
-    return os.path.join(resource_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["profile_dir_name"])
+    return os.path.join(data_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["profile_dir_name"])
 
 
 def find_browser_executable(profile=None):
@@ -549,7 +570,7 @@ DEFAULT_BOSSES = [
 ]
 
 def routines_path():
-    return os.path.join(resource_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["routines_filename"])
+    return os.path.join(data_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["routines_filename"])
 
 
 # As rotinas padrao usam passos 'dom_click'/'dom_tier_sort': interagem com a
@@ -883,7 +904,7 @@ def save_routines(routines):
 
 
 def settings_path():
-    return os.path.join(resource_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["settings_filename"])
+    return os.path.join(data_dir(), BROWSER_PROFILES[CURRENT_PROFILE]["settings_filename"])
 
 
 DEFAULT_SETTINGS = {"sound_enabled": True, "auto_advance_hunt": False, "default_hunt": "", "hunts_cache": []}
