@@ -11,7 +11,7 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.12.4"
+VERSION = "4.12.5"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -642,16 +642,14 @@ DEFAULT_ROUTINES = [
                 "hunts_selector": '.tp-opt[data-tp="hunts"]',
                 "row_selector": ".stage-row",
                 "name_selector": ".stage-name-line b",
-                "mobs_selector": ".stage-mobs",
                 "go_selector": ".stage-go",
-                "cyclopedia_selector": "#tab-cyclopedia",
-                "bestiary_tab_selector": '.cyc-tabbtn[data-tab="bestiary"]',
-                "bestiary_search_selector": ".bestiary-search",
-                "bestiary_cell_selector": ".cyc-cell",
-                "bestiary_cell_sub_selector": ".cyc-cell-sub",
-                "bestiary_track_selector": ".cyc-track",
-                "bestiary_back_selector": ".ghost-btn",
-                "cyclopedia_close_selector": "#cyclopedia-modal-close",
+                "hunt_details_button_selector": ".stage-details",
+                "hunt_details_modal_selector": "#hunt-details-modal",
+                "hunt_details_close_selector": "#hunt-details-modal-close",
+                "hunt_details_card_selector": ".hd-card",
+                "hunt_details_card_name_selector": ".hd-card-name",
+                "hunt_details_card_kills_selector": ".hd-card-kills",
+                "hunt_details_track_selector": ".cyc-track",
                 "bestiary_overlay_row_selector": "#bestiarytrack-overlay .bsk-row",
                 "bestiary_overlay_name_selector": ".gtk-hunt-name",
                 "bestiary_overlay_count_selector": ".gtk-count",
@@ -2645,115 +2643,87 @@ def untrack_unrelated_bestiary(page, monster_names, step, log):
         log(f"  {removed} criatura(s) de hunts antigas paradas de rastrear no Bestiary (limite de 5).")
 
 
-def track_bestiary_monsters(page, monster_names, step, log):
-    """Abre Cyclopedia > Bestiary, busca cada monstro da hunt atual e liga
-    'Rastrear na tela' pra quem ainda nao estiver. Retorna o conjunto (em
-    minusculo) dos monstros que ja apareceram como 'Completo' no Bestiary."""
-    cyclopedia_selector = step.get("cyclopedia_selector", "#tab-cyclopedia")
-    search_selector = step.get("bestiary_search_selector", ".bestiary-search")
-    cell_selector = step.get("bestiary_cell_selector", ".cyc-cell")
-    cell_sub_selector = step.get("bestiary_cell_sub_selector", ".cyc-cell-sub")
-    track_selector = step.get("bestiary_track_selector", ".cyc-track")
-    back_selector = step.get("bestiary_back_selector", ".ghost-btn")
-    close_selector = step.get("cyclopedia_close_selector", "#cyclopedia-modal-close")
+def read_and_track_hunt_details(page, step, target_hunt, log):
+    """Abre 'Detalhes' da hunt (dentro da lista de Hunts, ja aberta pelo
+    chamador - clica a linha pra expandir, depois o botao 'Detalhes') e liga
+    'Rastrear na tela' de cada criatura direto ali. Atualizacao do jogo
+    passou a mostrar TODAS as criaturas da hunt nessa tela, cada uma com o
+    MESMO botao/classe ('.cyc-track'/'.on') que o Cyclopedia > Bestiary -
+    nao precisa mais abrir o Cyclopedia e buscar uma por uma (era 1 busca +
+    1 ida-e-volta por monstro; agora e' 1 tela so' pra hunt inteira).
+    Retorna (monster_names, already_complete) - already_complete e' um set
+    (nomes em minusculo) de quem ja bateu o total de kills."""
+    row_selector = step.get("row_selector", ".stage-row")
+    hunt_name_selector = step.get("name_selector", ".stage-name-line b")
+    details_btn_selector = step.get("hunt_details_button_selector", ".stage-details")
+    modal_selector = step.get("hunt_details_modal_selector", "#hunt-details-modal")
+    close_selector = step.get("hunt_details_close_selector", "#hunt-details-modal-close")
+    card_selector = step.get("hunt_details_card_selector", ".hd-card")
+    card_name_selector = step.get("hunt_details_card_name_selector", ".hd-card-name")
+    card_kills_selector = step.get("hunt_details_card_kills_selector", ".hd-card-kills")
+    track_selector = step.get("hunt_details_track_selector", ".cyc-track")
 
-    already_complete = set()
-    bestiary_tab_selector = step.get("bestiary_tab_selector", '.cyc-tabbtn[data-tab="bestiary"]')
+    safe_hunt = target_hunt.strip().replace('"', '\\"')
+    row_scope = f'{row_selector}:has({hunt_name_selector}:text-is("{safe_hunt}"))'
 
     try:
-        page.click(cyclopedia_selector, timeout=3000)
-        # o Cyclopedia pode abrir em QUALQUER sub-aba (lembra a ultima
-        # visitada, ex: Items) - sem garantir a aba Bestiary ativa, a busca
-        # digita no campo errado (ou nenhum) e todo monstro da "nao
-        # encontrado". Mesmo problema ja visto na aba Tasks da guild.
-        tab_class = page.eval_on_selector(bestiary_tab_selector, "el => el.className") or ""
-        if "on" not in tab_class.split():
-            page.click(bestiary_tab_selector, timeout=3000)
-        if page.query_selector(search_selector) is None:
-            # pode ter ficado preso na tela de DETALHE de uma criatura de uma
-            # execucao anterior (ex: o clique em 'Voltar' falhou no meio por
-            # causa de um re-render) - tenta voltar pra lista antes de desistir.
-            try:
-                page.click(back_selector, timeout=1500)
-            except Exception:
-                pass
-        page.wait_for_selector(search_selector, timeout=4000)
-    except Exception as error:
-        log(f"  Erro ao abrir Cyclopedia/Bestiary: {error}")
-        return already_complete
-
-    tracked = 0
-    for name in monster_names:
-        # espera pelo card com o 'data-name' EXATO do monstro buscado (nao so
-        # 'qualquer card') - a grade tem um pequeno debounce ao filtrar, e so
-        # esperar 'algum card existir' podia pegar um resultado antigo (da
-        # busca anterior) que ainda nao tinha sumido da tela.
-        safe_name = name.strip().replace('"', '\\"')
-        exact_selector = f'{cell_selector}[data-name="{safe_name.lower()}"]'
-        try:
-            # timeout curto (default do Playwright e' 30s) - CONFIRMADO ao
-            # vivo que sem isso, um unico monstro com o campo momentaneamente
-            # nao preenchivel (ex: transicao de tela de um chefe aparecendo
-            # no meio da hunt) travava o bot INTEIRO por 30s (mais outros 30s
-            # se o proximo monstro da lista desse o mesmo problema) - nada
-            # mais rodava nesse tempo (Vender Loot, Separar Loot etc.), o que
-            # parecia a tela inteira travada.
-            page.fill(search_selector, name, timeout=3000)
-        except Exception as error:
-            log(f"  Erro ao buscar '{name}' no Bestiary: {error}")
-            continue
-
-        try:
-            page.wait_for_selector(exact_selector, timeout=2000)
-            cell = page.query_selector(exact_selector)
-        except Exception:
-            cell = None
-        if cell is None:
-            log(f"  '{name}' nao encontrado no Bestiary.")
-            continue
-
-        sub_el = cell.query_selector(cell_sub_selector)
-        sub_text = (sub_el.text_content() or "").strip().lower() if sub_el else ""
-        if sub_text == "completo":
-            # ja bateu o total - nao precisa abrir o detalhe nem tentar
-            # rastrear, so contar como completo (a criatura pode ja ter
-            # atingido isso antes mesmo do bot comecar a acompanhar essa hunt).
-            already_complete.add(name.strip().lower())
-            continue
-
-        try:
-            cell.click(timeout=3000)
+        details_btn = page.query_selector(f"{row_scope} {details_btn_selector}")
+        if details_btn is None or not details_btn.is_visible():
+            # a linha precisa estar expandida (clicada) antes do botao
+            # 'Detalhes' ficar visivel - mesmo padrao ja visto no botao
+            # 'Enfrentar' dos chefes e 'Caçar' das hunts.
+            page.click(row_scope, timeout=3000)
             time.sleep(0.3)
-            track_btn = page.query_selector(track_selector)
-            if track_btn is not None and "on" not in (track_btn.get_attribute("class") or "").split():
-                track_btn.click(timeout=3000)
-                tracked += 1
+        page.click(f"{row_scope} {details_btn_selector}", timeout=3000)
+        page.wait_for_selector(f"{modal_selector} {card_selector}", timeout=4000)
+    except Exception as error:
+        log(f"  Erro ao abrir Detalhes da hunt '{target_hunt}': {error}")
+        return [], set()
+
+    # le nome + progresso + se ja esta rastreando de TODAS as criaturas numa
+    # unica chamada (mesmo motivo de sempre - varias criaturas, cada leitura
+    # separada e uma ida-e-volta pelo protocolo de depuracao).
+    cards = page.evaluate(
+        """([cardSel, nameSel, killsSel, trackSel]) => Array.from(document.querySelectorAll(cardSel)).map(card => ({
+            name: card.querySelector(nameSel)?.textContent?.trim() || '',
+            kills: card.querySelector(killsSel)?.textContent || '',
+            tracking: card.querySelector(trackSel)?.classList.contains('on') || false,
+        }))""",
+        [card_selector, card_name_selector, card_kills_selector, track_selector],
+    )
+
+    monsters = []
+    already_complete = set()
+    tracked = 0
+    for card in cards:
+        name = card["name"]
+        if not name:
+            continue
+        monsters.append(name)
+
+        kill_match = re.search(r"([\d.]+)\s*/\s*([\d.]+)", card["kills"] or "")
+        if kill_match and kill_match.group(1).replace(".", "") == kill_match.group(2).replace(".", ""):
+            already_complete.add(name.lower())
+
+        if card["tracking"]:
+            continue
+        try:
+            safe_name = name.replace('"', '\\"')
+            btn_selector = f'{card_selector}:has({card_name_selector}:text-is("{safe_name}")) {track_selector}'
+            page.click(btn_selector, timeout=3000)
+            tracked += 1
         except Exception as error:
-            log(f"  Erro ao rastrear '{name}' no Bestiary: {error}")
-        finally:
-            # sempre tenta voltar pra lista antes do proximo monstro - senao a
-            # busca do proximo nome fica presa na tela de detalhe deste.
-            try:
-                page.click(back_selector, timeout=2000)
-            except Exception:
-                pass
-            time.sleep(0.2)
+            log(f"  Erro ao ligar rastreio de '{name}': {error}")
 
     if tracked:
-        log(f"  {tracked} criatura(s) marcada(s) pra rastrear no Bestiary.")
+        log(f"  {tracked} criatura(s) marcada(s) pra rastrear (direto pelos Detalhes da hunt).")
 
     try:
-        page.click(close_selector, timeout=3000)
+        page.click(close_selector, timeout=2000)
     except Exception:
-        # 1 Escape so' as vezes nao bastava aqui - CONFIRMADO ao vivo que uma
-        # falha no ultimo monstro (ex: 'Voltar' da tela de detalhe tambem
-        # falhando) podia deixar telas empilhadas (detalhe + Cyclopedia), e a
-        # tela ficava presa, bloqueando a proxima rotina (ex: Vender Loot).
-        for _ in range(3):
-            page.keyboard.press("Escape")
-            time.sleep(0.2)
+        page.keyboard.press("Escape")
 
-    return already_complete
+    return monsters, already_complete
 
 
 def bestiary_all_complete(page, monster_names, already_complete, step, log):
@@ -3021,8 +2991,8 @@ def finish_completed_bestiary_tracks(page, step, log):
 
 def execute_dom_hunt_bestiary_step(page, step, log):
     """Passo tipo 'dom_hunt_bestiary': quando a hunt ativa muda, descobre os
-    monstros dela (mesma lista de 'Detalhes' das Hunts) e liga 'Rastrear na
-    tela' de cada um no Bestiary (Cyclopedia > Bestiary), parando de rastrear
+    monstros dela e liga 'Rastrear na tela' de cada um direto pela tela de
+    'Detalhes' da hunt (ve read_and_track_hunt_details), parando de rastrear
     o que sobrou de hunts antigas (limite do jogo e 5 rastreadas ao mesmo
     tempo). Todo ciclo tambem finaliza (desliga) qualquer rastreio ja 100%
     completo, mesmo sem trocar de hunt. Depois, confere - so lendo o quadro do
@@ -3043,7 +3013,6 @@ def execute_dom_hunt_bestiary_step(page, step, log):
     hunts_selector = step["hunts_selector"]
     row_selector = step.get("row_selector", ".stage-row")
     hunt_name_selector = step.get("name_selector", ".stage-name-line b")
-    mobs_selector = step.get("mobs_selector", ".stage-mobs")
     go_selector = step.get("go_selector", ".stage-go")
 
     if not current_hunt:
@@ -3098,36 +3067,27 @@ def execute_dom_hunt_bestiary_step(page, step, log):
 
     if BESTIARY_MEMORY.get("last_hunt") != current_hunt:
         monsters = []
+        already_complete = set()
         try:
             click_open_wave(page, open_selector)
             page.click(hunts_selector, timeout=3000)
             page.wait_for_selector(row_selector, timeout=4000)
             clear_hunt_search(page)
-            mobs_text = page.evaluate(
-                """([rowSel, nameSel, mobsSel, wanted]) => {
-                    const rows = Array.from(document.querySelectorAll(rowSel));
-                    const row = rows.find(r => (r.querySelector(nameSel)?.textContent || '').trim() === wanted);
-                    return row ? (row.querySelector(mobsSel)?.textContent || '') : '';
-                }""",
-                [row_selector, hunt_name_selector, mobs_selector, current_hunt],
-            )
-            monsters = [m.strip() for m in mobs_text.split(",") if m.strip()]
+            # le os monstros da hunt E liga 'Rastrear na tela' de cada um,
+            # tudo na mesma tela de 'Detalhes' - ver read_and_track_hunt_details.
+            monsters, already_complete = read_and_track_hunt_details(page, step, current_hunt, log)
         except Exception as error:
             log(f"  Erro ao ler os monstros da hunt '{current_hunt}': {error}")
 
-        # fecha a lista de Hunts ANTES de mexer no quadro do HUD ou abrir o
-        # Cyclopedia - o overlay dela cobre a tela e bloqueia clique em
-        # qualquer coisa por baixo enquanto estiver aberta (mesmo problema ja
-        # visto com o painel Social/Guild).
+        # fecha a lista de Hunts ANTES de mexer no quadro do HUD - o overlay
+        # dela cobre a tela e bloqueia clique em qualquer coisa por baixo
+        # enquanto estiver aberta (mesmo problema ja visto com o painel
+        # Social/Guild).
         page.keyboard.press("Escape")
         page.keyboard.press("Escape")
         time.sleep(0.3)
 
         untrack_unrelated_bestiary(page, monsters, step, log)
-
-        already_complete = set()
-        if monsters:
-            already_complete = track_bestiary_monsters(page, monsters, step, log)
 
         BESTIARY_MEMORY["last_hunt"] = current_hunt
         BESTIARY_MEMORY["monsters"] = monsters
