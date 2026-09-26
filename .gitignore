@@ -13,11 +13,19 @@ routines_opera.json
 settings.json
 settings_opera.json
 
-# painel de mercado - ferramenta pessoal separada (estrategia de precos,
-# banco de dados proprio) - nao faz parte do que e' compartilhado do bot (o
-# zip pro Windows tambem nao leva); o bot roda normal sem essa pasta, so' o
-# botao 'Acompanhar Mercado' fica indisponivel.
-market/
+# painel de mercado - o CODIGO agora vai junto no build compartilhado (roda
+# sozinho em qualquer PC/Mac que receber o bot), mas os dados de verdade
+# (banco de precos/posicoes, backups, perfil do Chrome dedicado, config
+# pessoal) continuam de fora - cada instalacao comeca com um banco vazio,
+# do mesmo jeito que routines.json/settings.json ja funcionam.
+market/market.db
+market/market.db-shm
+market/market.db-wal
+market/backups/
+market/chrome_profile/
+market/config.json
+market/__pycache__/
+market/handoff-baiak-market-alert.pdf
 
 __pycache__/
 *.pyc

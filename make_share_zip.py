@@ -22,11 +22,22 @@ import zipfile
 
 import bot
 
-DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+HERE = os.path.dirname(os.path.abspath(__file__))
+DIST_DIR = os.path.join(HERE, "dist")
 EXE_PATH = os.path.join(DIST_DIR, "BaiakIdleBot.exe")
-ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+ICON_PATH = os.path.join(HERE, "icon.ico")
 VERSIONED_EXE_NAME = f"v{bot.VERSION}-BaiakIdleBot.exe"
 ZIP_PATH = os.path.join(DIST_DIR, f"v{bot.VERSION}-BaiakIdleBot.zip")
+
+# leva o CODIGO do market/ junto (roda sozinho em qualquer PC que receber o
+# bot) - mas nunca os dados de verdade (banco de precos/posicoes, backups,
+# perfil do Chrome dedicado, config pessoal): cada instalacao comeca com um
+# banco vazio, do mesmo jeito que routines.json/settings.json ja funcionam.
+MARKET_SRC_DIR = os.path.join(HERE, "market")
+MARKET_EXCLUDE_NAMES = (
+    "market.db", "market.db-shm", "market.db-wal", "backups", "chrome_profile",
+    "config.json", "__pycache__", "handoff-baiak-market-alert.pdf",
+)
 
 
 def main():
@@ -48,12 +59,21 @@ def main():
         with open(os.path.join(tmp_dir, "settings.json"), "w", encoding="utf-8") as file:
             json.dump(bot.DEFAULT_SETTINGS, file, ensure_ascii=False, indent=2)
 
+        if os.path.isdir(MARKET_SRC_DIR):
+            shutil.copytree(
+                MARKET_SRC_DIR,
+                os.path.join(tmp_dir, "market"),
+                ignore=shutil.ignore_patterns(*MARKET_EXCLUDE_NAMES),
+            )
+
         if os.path.exists(ZIP_PATH):
             os.remove(ZIP_PATH)
 
         with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
-            for name in os.listdir(tmp_dir):
-                zf.write(os.path.join(tmp_dir, name), name)
+            for root, _dirs, files in os.walk(tmp_dir):
+                for name in files:
+                    full_path = os.path.join(root, name)
+                    zf.write(full_path, os.path.relpath(full_path, tmp_dir))
 
         print(f"Pronto: {ZIP_PATH} (routines.json e settings.json com valores padrao)")
     finally:

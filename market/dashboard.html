@@ -1,0 +1,1858 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baiak Market</title>
+<style>
+  :root{
+    --bg:#14161c; --panel:#1c1f27; --panel2:#232733; --line:#2e3341;
+    --txt:#e6e8ee; --mut:#9aa3b2; --accent:#d9a441; --good:#4caf72;
+    --bad:#e0574a; --warn:#e0a92e; --info:#4a90d9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+  h1{font-size:18px;margin:0}
+  h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--mut);margin:22px 0 8px}
+  a{color:var(--accent)}
+  .wrap{max-width:min(1440px, 96vw);margin:0 auto;padding:16px}
+  html{scroll-behavior:smooth}
+  h2{scroll-margin-top:58px}
+  .nav{position:sticky;top:0;z-index:30;display:flex;gap:6px;overflow-x:auto;
+    padding:8px 2px;margin-top:6px;background:var(--bg);border-bottom:1px solid var(--line)}
+  .nav a{white-space:nowrap;font-size:12px;color:var(--mut);text-decoration:none;
+    padding:4px 10px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+  .nav a:hover{border-color:var(--accent);color:var(--txt)}
+  .nav a.on{background:var(--accent);color:#1a1200;border-color:var(--accent);font-weight:600}
+  .nav a.alert{background:var(--bad);color:#fff;border-color:var(--bad);animation:navBlink 1s ease-in-out infinite}
+  .nav .cnt{font-size:10px;font-weight:700;opacity:.85}
+  .nav .cnt:not(:empty)::before{content:"· "}
+  @keyframes navBlink{50%{opacity:.55}}
+  h2.sec{cursor:pointer;user-select:none}
+  h2.sec::before{content:"▸";margin-right:6px;font-size:11px}
+  h2.sec.open::before{content:"▾"}
+  .sec-collapsed{display:none}
+  .totop{position:fixed;right:22px;bottom:22px;z-index:40;width:42px;height:42px;
+    border-radius:50%;font-size:20px;line-height:1;padding:0;background:var(--accent);
+    color:#1a1200;border-color:var(--accent);font-weight:700;
+    box-shadow:0 4px 14px rgba(0,0,0,.5)}
+  .totop:hover{filter:brightness(1.12)}
+  #gearTable td:first-child, #stackTable td:first-child, #histTable td:first-child,
+  .bbody table td:first-child, #openTable td:first-child,
+  #doneTable td:first-child, #watchTable td:first-child, #lkTable td:first-child,
+  #stockTable td:first-child
+  {min-width:230px}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    border-bottom:1px solid var(--line);padding-bottom:12px}
+  header .status{color:var(--mut);font-size:12px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+    background:var(--mut);margin-right:5px}
+  .dot.live{background:var(--good);box-shadow:0 0 6px var(--good)}
+  button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);
+    border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#1a1200;border-color:var(--accent);
+    font-weight:600}
+  button.ghost{background:transparent}
+  table{width:100%;border-collapse:collapse;margin-top:4px}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);
+    font-size:13px;vertical-align:middle}
+  th{color:var(--mut);font-weight:500;font-size:11px;text-transform:uppercase;
+    letter-spacing:.04em}
+  tr:hover td{background:var(--panel)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:4px 12px 10px}
+  .num{font-variant-numeric:tabular-nums}
+  .pos{color:var(--good)} .neg{color:var(--bad)} .mut{color:var(--mut)}
+  .warn-t{color:var(--warn)}
+  @keyframes alertPulse {
+    0%,100% { box-shadow: inset 3px 0 var(--bad), 0 0 0 0 rgba(224,87,74,0); background: rgba(224,87,74,.05); }
+    50%     { box-shadow: inset 3px 0 var(--bad), 0 0 0 3px rgba(224,87,74,.55); background: rgba(224,87,74,.18); }
+  }
+  tr.alert-row td { animation: alertPulse 1.1s ease-in-out infinite; }
+  tr.alert-row td:first-child { position: relative; }
+  @keyframes flashPulse {
+    0%,100% { box-shadow: inset 3px 0 var(--good), 0 0 0 0 rgba(76,175,114,0); background: rgba(76,175,114,.06); }
+    50%     { box-shadow: inset 3px 0 var(--good), 0 0 0 3px rgba(76,175,114,.5); background: rgba(76,175,114,.2); }
+  }
+  tr.flash-row td { animation: flashPulse 1s ease-in-out infinite; }
+  /* Procurar por oferta: borda de referencia rapida - achou (azul) -> falta
+     10min (laranja) -> falta 1min (vermelho, reaproveita o pulso de alert-row) */
+  tr.b-found td:first-child, tr.b-soon td:first-child { position: relative; }
+  tr.b-found td { box-shadow: inset 3px 0 var(--info); }
+  tr.b-soon td { box-shadow: inset 3px 0 var(--warn); }
+  .tag{font-size:11px;padding:2px 6px;border-radius:4px;background:var(--panel2);
+    color:var(--mut)}
+  .tag.win{background:#1e3a2a;color:#7fd7a2}
+  .tag.out{background:#3a2320;color:#e59a90}
+  .tag.hold{background:#333a2a;color:#cdd98f}
+  .badge{font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;
+    text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}
+  .badge.boa{background:#3a3320;color:#e0c06a}
+  .badge.muito{background:#3a2a1c;color:#f0a563}
+  .badge.excelente{background:#1e3a2a;color:#7fd7a2}
+  .stt{font-size:11px;color:var(--accent);cursor:pointer;text-decoration:underline dotted}
+  .iname{cursor:help;border-bottom:1px dotted var(--mut)}
+  .ithumb{width:26px;height:26px;object-fit:contain;vertical-align:middle;
+    margin-right:6px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:4px;padding:2px}
+  .itip{position:fixed;z-index:50;width:220px;background:#0e0f14;border:1px solid var(--line);
+    border-radius:8px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.5);
+    font-size:12px;pointer-events:none}
+  .itip-h{text-align:center;font-weight:700;font-size:13px}
+  .itip-name{text-align:center;font-weight:600;margin:2px 0 4px}
+  .itip-sub{text-align:center;color:var(--mut);font-size:11px;margin-bottom:6px}
+  .itip-img{display:flex;justify-content:center;margin:4px 0 8px}
+  .itip-img img{width:64px;height:64px;object-fit:contain;background:var(--panel2);
+    border:1px solid var(--line);border-radius:6px;padding:4px}
+  .itip-row{display:flex;justify-content:space-between;gap:10px;padding:1px 0;color:var(--txt)}
+  .itip-row span:first-child{color:var(--mut)}
+  .itip-sec{text-align:center;color:var(--mut);font-size:10px;text-transform:uppercase;
+    letter-spacing:.05em;margin:8px 0 2px;border-top:1px solid var(--line);padding-top:6px}
+  .itip-attr{font-size:11px;color:var(--good);text-align:center}
+  .tr{font-size:10px;padding:1px 4px;border-radius:3px;white-space:nowrap}
+  .tr.dn{background:#3a2320;color:#e59a90}
+  .tr.up{background:#1e3a2a;color:#7fd7a2}
+  tr.t-boa td:first-child{box-shadow:inset 3px 0 var(--warn)}
+  tr.t-muito td:first-child{box-shadow:inset 3px 0 #e07b2e}
+  tr.t-muito td{background:rgba(224,123,46,.06)}
+  tr.t-excelente td{background:rgba(76,175,114,.10)}
+  tr.t-excelente td:first-child{box-shadow:inset 3px 0 var(--good)}
+  .bf{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .bchips{display:flex;gap:4px;flex-wrap:wrap}
+  .bdet{border:1px solid var(--line);border-radius:7px;margin-top:8px;
+    background:var(--panel2)}
+  .bsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 11px;
+    cursor:pointer;user-select:none}
+  .bdet.nostate .bsum{cursor:default}
+  .bsum::before{content:"▸";color:var(--mut);font-size:11px;width:10px}
+  .bdet.nostate .bsum::before{visibility:hidden}
+  .bdet.bopen .bsum::before{content:"▾"}
+  .bsum:hover{background:var(--panel)}
+  .bbody{display:none;padding:0 4px 6px}
+  .bdet.bopen .bbody{display:block}
+  tr.grp td{padding:4px 9px;background:var(--panel);font-size:11px;font-weight:700;
+    text-transform:uppercase;letter-spacing:.04em}
+  .empty{color:var(--mut);padding:10px 2px;font-style:italic}
+  .pnl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    gap:10px;margin-top:6px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    padding:10px 12px}
+  .card .k{color:var(--mut);font-size:11px;text-transform:uppercase;
+    letter-spacing:.04em}
+  .card .v{font-size:20px;margin-top:3px;font-variant-numeric:tabular-nums}
+  .row-inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  input[type=number],input[type=date]{background:var(--panel2);border:1px solid var(--line);
+    color:var(--txt);border-radius:6px;padding:5px 8px;font-size:13px;width:130px}
+  .hint{color:var(--warn);font-size:12px}
+  .cp{border:0;background:transparent;color:var(--mut);cursor:pointer;padding:0 4px;
+    font-size:12px;vertical-align:middle}
+  .cp:hover{color:var(--accent)}
+  .cp.ok{color:var(--good)}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0 4px;
+    padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .seg button{border:0;border-radius:0;background:transparent;padding:5px 12px}
+  .seg button.on{background:var(--accent);color:#1a1200;font-weight:600}
+  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:14px;padding:3px 6px 3px 10px;font-size:12px}
+  .chip.off{opacity:.45}
+  .chip button{border:0;background:transparent;padding:0 4px;color:var(--mut);font-size:14px}
+  select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 8px;font-size:13px}
+  input[type=text]{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:5px 8px;font-size:13px;width:120px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Baiak Market</h1>
+    <span class="status" id="status">carregando...</span>
+    <span style="flex:1"></span>
+    <button class="ghost" id="bellBtn" title="ativar avisos no desktop quando um lance for coberto">🔔</button>
+    <button class="primary" id="scanBtn">Varrer agora</button>
+  </header>
+
+  <nav class="nav" id="nav">
+    <a href="#secWatch">Acompanhando <span class="cnt" data-cnt="watch"></span></a>
+    <a href="#secBounty" title="ofertas boas nas suas buscas">Procurar <span class="cnt" data-cnt="bounty"></span></a>
+    <a href="#secGear">Equipamento <span class="cnt" data-cnt="gear"></span></a>
+    <a href="#secStack">Lote <span class="cnt" data-cnt="stack"></span></a>
+    <a href="#secGold" id="navGold">Gold <span class="cnt" data-cnt="gold"></span></a>
+    <a href="#secBoss" title="boss token x addon casket: 500 tokens = 1 addon">Boss Token <span class="cnt" data-cnt="boss"></span></a>
+    <a href="#secCraft" title="comprar item com Exp no nível 1, upar com gemas e revender">Compra/Venda <span class="cnt" data-cnt="craft"></span></a>
+    <a href="#secOpen">Posições <span class="cnt" data-cnt="open"></span></a>
+    <a href="#secStock" title="o que você comprou e ainda não vendeu nem usou">Estoque <span class="cnt" data-cnt="stock"></span></a>
+    <a href="#secDone">Vendidas</a>
+    <a href="#secHist">Histórico</a>
+    <a href="#secAppr" title="quanto vale um item pelas especificações dele (informe o nº do leilão)">Avaliar</a>
+    <a href="#secAttrs" title="quanto cada atributo (e nível de Exp) valoriza um item">Atributos</a>
+    <a href="#secLookup">Consultar preço</a>
+    <a href="#secPnl">Lucro</a>
+  </nav>
+
+  <div class="bar">
+    <strong>Ver:</strong>
+    <span class="seg" id="modeSeg">
+      <button data-mode="all">Mercado todo</button>
+      <button data-mode="chars">Meus personagens</button>
+    </span>
+    <span id="charChips" style="display:flex;gap:6px;flex-wrap:wrap"></span>
+    <span style="flex:1"></span>
+    <span class="chip" style="border-style:dashed">
+      <select id="cVoc">
+        <option value="knight">EK</option><option value="paladin">RP</option>
+        <option value="sorcerer">MS</option><option value="druid">ED</option>
+        <option value="monk">MK</option>
+      </select>
+      <input type="text" id="cName" placeholder="nome" style="width:100px">
+      <input type="number" id="cLevel" placeholder="lv" style="width:60px">
+      <button id="cAdd" title="adicionar personagem">＋</button>
+    </span>
+  </div>
+  <div id="charHint" class="hint" hidden>Cadastre um personagem para filtrar.</div>
+
+  <h2 id="secWatch">Acompanhando</h2>
+  <div class="panel">
+    <div class="row-inline">
+      <input type="text" id="wSearch" placeholder="nome do item pra achar no market" style="width:230px">
+      <button id="wSearchBtn">buscar</button>
+      <span class="mut">ou</span>
+      <input type="number" id="wId" placeholder="id do leilão" style="width:120px">
+      <button id="wAddId">＋ acompanhar</button>
+      <span class="mut" id="wNote"></span>
+    </div>
+    <div id="wResults" style="overflow-x:auto;margin-top:8px"></div>
+    <div style="overflow-x:auto;margin-top:10px"><table id="watchTable">
+      <thead><tr>
+        <th>Item</th><th>Preço agora</th>
+        <th title="preço justo (mediana recente) e o teto pra revender com margem; ≈ = sem histórico do próprio item, estimativa pelo mesmo tipo+raridade">Preço justo / Revender até</th>
+        <th title="preço justo × 0,90 (rake) - preço agora, se você arrematasse agora">Retorno estimado</th>
+        <th>Lances</th><th>Encerra em</th><th></th>
+      </tr></thead><tbody></tbody>
+    </table><div class="empty" id="watchEmpty" hidden>adicione um item pra acompanhar ao vivo (alerta quando faltar ~5 min)</div></div>
+  </div>
+
+  <h2 id="secBounty">Procurar por oferta</h2>
+  <div class="panel">
+    <div class="row-inline">
+      <input type="text" id="bName" placeholder="nome do item (opcional - ex: demonfang mask)" style="width:300px">
+      <button id="bAdd">＋ adicionar busca</button>
+      <span class="mut" id="bNote"></span>
+    </div>
+    <div class="bf"><span class="mut">Tipo:</span><span id="bKinds" class="bchips"></span></div>
+    <div class="bf"><span class="mut">Vocação:</span><span id="bVocs" class="bchips"></span></div>
+    <div class="bf"><span class="mut">Raridade:</span><span id="bRar" class="bchips"></span></div>
+    <div class="bf"><span class="mut">Classe:</span><span id="bCls" class="bchips"></span></div>
+    <div class="bf"><span class="mut">Atributos:</span>
+      <select id="bAttrSel"><option value="">+ escolher atributo...</option></select>
+      <span id="bAttrChips" class="bchips"></span>
+      <span class="mut" style="font-size:11px">(o anúncio precisa ter todos)</span></div>
+    <div class="mut" style="font-size:11px;margin-top:6px">Combine como quiser: nome, tipo, vocação, raridade, classe e atributos (todos opcionais). Ex.: Perneira + MS + Exp. Cada busca lista <strong>tudo que está à venda</strong> com o quanto vale pagar (usar / revender).</div>
+    <div id="bList" style="margin-top:6px"></div>
+    <div class="empty" id="bEmpty" hidden>cadastre uma busca - a cada varredura o sistema procura no mercado e avalia quanto vale pagar em cada anúncio (pra usar ou revender)</div>
+  </div>
+
+  <h2 id="secGear">Oportunidades - Equipamento</h2>
+  <div class="panel"><div style="overflow-x:auto"><table id="gearTable">
+    <thead><tr>
+      <th>Item</th><th>Raridade</th><th title="rótulo boa/muito boa/excelente + veredito revender/usar + tendência de preço (📉 caindo / ➡ estável / 📈 subindo, últimos 2 dias vs a semana)">Qualidade</th>
+      <th title="verde = já dá pra revender com lucro · âmbar = só compensa se for equipar">Preço atual</th>
+      <th title="compre até aqui e revende com margem folgada; 'empata' = onde o rake de 10% zera o lucro">Revender até</th>
+      <th title="teto pra equipar sem pagar acima do mercado (preço justo do item)">Usar até</th>
+      <th title="ganho bruto se comprar agora e revender ao preço justo (antes do rake)">Economia</th>
+      <th>Liquidez</th>
+      <th title="anúncios iguais ativos agora (leilões são curtos, ~6h, então quase todos competem já); embaixo, quantas vezes há mais vendedores que compradores até fecharem. >1 = preço sofre na revenda">No mercado</th>
+      <th>Lances</th><th>Encerra</th><th></th>
+    </tr></thead><tbody></tbody>
+  </table></div><div class="empty" id="gearEmpty" hidden>-</div></div>
+
+  <h2 id="secStack">Oportunidades - Lote (empilháveis)</h2>
+  <div class="panel"><div style="overflow-x:auto"><table id="stackTable">
+    <thead><tr>
+      <th>Item</th><th title="rótulo boa/muito boa/excelente + veredito revender/usar + tendência de preço (📉 caindo / ➡ estável / 📈 subindo, últimos 2 dias vs a semana)">Qualidade</th>
+      <th title="verde = já dá pra revender com lucro">Preço atual</th><th>Un.</th>
+      <th title="compre até aqui e revende com margem; 'empata' = onde o rake zera o lucro">Revender até</th>
+      <th>Mediana/un</th><th title="ganho bruto vs preço justo, antes do rake">Economia</th><th>Liquidez</th>
+      <th title="anúncios iguais ativos agora; embaixo, vendedores por comprador até fecharem (>1 = preço sofre)">No mercado</th>
+      <th>Lances</th><th>Encerra</th><th></th>
+    </tr></thead><tbody></tbody>
+  </table></div><div class="empty" id="stackEmpty" hidden>-</div></div>
+
+  <h2 id="secGold">Oportunidades - Gold</h2>
+  <div class="panel">
+    <div id="goldMkt"></div>
+    <div class="mut" style="font-size:12px;margin:8px 2px 0">Gold é só pra <strong>usar</strong>: o desconto é contra a <strong>taxa de mercado de agora</strong> (mediana exponencial das vendas recentes). "Ao fechar" é o desconto que se costuma pagar de verdade - o preço sobe nos últimos minutos, então o desconto que você vê agora costuma encolher.</div>
+    <div style="overflow-x:auto"><table id="goldTable">
+    <thead><tr>
+      <th>Qtd gold</th><th title="boa/muito boa/excelente pelo desconto ESPERADO ao fechar (não o de agora) + tendência da taxa (desce um nível se a taxa está em queda forte)">Qualidade</th><th>Preço atual</th>
+      <th title="preço máximo pra ainda levar o desconto mínimo de uso (gold_use_min_discount) abaixo da taxa - acima disso, o desconto não compensa">Teto de lance</th>
+      <th>coins/100M</th><th title="taxa de mercado de agora em coins por 100M (ou o piso de 25 coins, em lote pequeno)">Taxa/100M</th>
+      <th title="desconto que você vê agora → desconto que se costuma pagar ao fechar (medido no histórico), e a chance de sobrar pelo menos o desconto mínimo de uso">Desconto</th>
+      <th>Economia</th>
+      <th>Lances</th><th>Encerra</th><th></th>
+    </tr></thead><tbody></tbody>
+  </table></div><div class="empty" id="goldEmpty" hidden>-</div></div>
+
+  <h2 id="secBoss" class="sec" data-sec="boss" title="clique pra expandir/recolher">Boss Token <span class="secn mut"></span></h2>
+  <div class="panel">
+    <div id="bossCards"></div>
+    <div style="overflow-x:auto;margin-top:10px"><table id="bossTable">
+      <thead><tr>
+        <th title="tokens no lote">Lote</th><th>Preço agora</th>
+        <th title="preço agora convertido pra 500 tokens (= 1 addon)">500 tokens</th>
+        <th title="quanto o lote vale em coins de addon (500 tokens = 1 addon)">Vale</th>
+        <th title="valor do lote menos a margem mínima (boss_min_margin): dê lance só até aqui e largue se passar - você não perde nada se o preço subir">Teto de lance</th>
+        <th title="preço final típico (mediana) dos últimos fechamentos de lotes parecidos - o desfecho é dividido: ou ninguém disputa e fecha no piso, ou vira briga e passa do valor">Fecha típico</th>
+        <th title="fatia dos últimos fechamentos de lotes parecidos em que este lote ficaria abaixo do teto (o preço nunca fecha abaixo do de agora)">Chance ≤ teto</th>
+        <th title="lucro esperado de quem dá lance só até o teto = chance × lucro médio quando ganha (se o preço passar, você larga: lucro 0)">Lucro esperado</th>
+        <th>Veredito</th><th>Encerra</th>
+      </tr></thead><tbody></tbody>
+    </table></div>
+    <div class="empty" id="bossEmpty" hidden>nenhum leilão de boss token compensa agora</div>
+    <div style="overflow-x:auto;margin-top:12px"><table id="bossDaily">
+      <thead><tr><th>Dia</th><th title="mediana do custo de 500 tokens nos fechamentos do dia">Custo de 500 tokens</th>
+        <th title="fatia dos fechamentos em que 500 tokens custaram menos que o addon">Abaixo do addon</th><th>Vendas</th><th>Lances médios</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+
+  <h2 id="secCraft" class="sec" data-sec="craft" title="clique pra expandir/recolher">Oportunidade Compra/Venda <span class="secn mut"></span></h2>
+  <div class="panel">
+    <div style="overflow-x:auto"><table id="craftTable">
+      <thead><tr>
+        <th>Item</th>
+        <th title="melhor nível-alvo do Exp (e gemas esperadas em média); embaixo, os outros níveis com o seu 'comprar até'">Alvo</th>
+        <th title="preço máximo do nível 1 que ainda deixa a margem mínima, mesmo com o custo de upar; embaixo, o nível 1 típico (mediana das vendas) como referência">Comprar até</th>
+        <th title="gemas esperadas convertidas em coins pela taxa atual do gold">Custo de upar</th>
+        <th title="mediana das vendas com Exp no nível-alvo e vizinhos (n = nº de vendas, /dia = liquidez)">Vende</th>
+        <th title="mediana da venda - rake - taxa - nível 1 (típico) - gemas">Lucro</th>
+        <th title="fatia das vendas comparáveis em que ainda sobra lucro">Chance</th>
+        <th title="leilões de nível 1 (com Exp) ativos agora: lucro se levar por aquele preço, quando fecha e quando você venderia (fecha + 6h de anúncio)">Leilão agora</th>
+      </tr></thead><tbody></tbody>
+    </table></div>
+    <div class="empty" id="craftEmpty" hidden>nenhum item de nível 1 com Exp no mercado passa nos filtros agora</div>
+    <div class="mut" id="craftNote" style="font-size:11px;margin-top:6px"></div>
+    <details id="craftOthersBox" style="margin-top:10px">
+      <summary style="cursor:pointer" class="mut"><span id="craftOthersTitle">Outros itens no mercado</span> - não passaram nos filtros (pra avaliar se algum faz sentido)</summary>
+      <div style="overflow-x:auto;margin-top:8px"><table id="craftOthersTable">
+        <thead><tr>
+          <th>Item</th>
+          <th title="por que não passou nos filtros (craft_min_upgraded / craft_min_profit / craft_min_p)">Motivo</th>
+          <th title="nível-alvo com melhor lucro e gemas esperadas">Melhor alvo</th>
+          <th title="preço máximo do nível 1 que ainda deixa a margem mínima; embaixo, o nível 1 típico">Comprar até</th>
+          <th title="mediana das vendas com Exp no nível-alvo e vizinhos (n = vendas)">Vende</th>
+          <th title="lucro mediano no leilão mais barato, já com o preço projetado do fechamento">Lucro</th>
+          <th>Chance</th>
+          <th title="leilões de nível 1 com Exp ativos agora (preço agora → fechamento projetado)">Leilão agora</th>
+        </tr></thead><tbody></tbody>
+      </table></div>
+      <div class="row-inline" id="craftOthersPager" style="justify-content:center"></div>
+    </details>
+  </div>
+
+  <h2 id="secOpen" class="sec" data-sec="open" title="clique pra expandir/recolher">Posições abertas <span class="secn mut"></span></h2>
+  <div class="panel"><div style="overflow-x:auto"><table id="openTable">
+    <thead><tr>
+      <th>Item</th><th>Aberta em</th><th>Lance máx.</th>
+      <th title="referências de quando você deu o lance">Revender / Usar até</th>
+      <th>Leilão agora</th><th>Situação</th>
+      <th>Encerra em</th><th>Ações</th>
+    </tr></thead><tbody></tbody>
+  </table></div><div class="empty" id="openEmpty" hidden>nenhuma posição aberta</div>
+  <div class="row-inline" id="openPager" style="justify-content:center"></div></div>
+
+  <h2 id="secStock" class="sec" data-sec="stock" title="clique pra expandir/recolher">Estoque <span class="secn mut"></span></h2>
+  <div class="panel">
+    <div id="stockCards"></div>
+    <div class="mut" style="font-size:12px;margin:8px 2px 0">Estoque = o que você já comprou (arrematou) e ainda não vendeu nem usou. <strong>Vale hoje</strong> é o preço justo atual do item (mediana recente, conservadora); <strong>Sobra se vender</strong> já desconta o rake de 10% e a taxa de listagem. O veredito diz se vale anunciar agora ou segurar, e <strong>Anunciar</strong> dá o preço inicial e a melhor hora (o leilão dura 6h+, então anunciar à tarde fecha à noite, quando o mercado está mais quente). <strong>Vendi</strong> registra a venda (entra no lucro); <strong>Usei</strong> tira do estoque sem venda.</div>
+    <div style="overflow-x:auto;margin-top:10px"><table id="stockTable">
+      <thead><tr>
+        <th>Item</th><th>Comprei</th>
+        <th title="preço justo de hoje (mediana recente, a menor entre a da semana e a dos últimos 2 dias)">Vale hoje</th>
+        <th title="vale hoje - rake de 10% - taxa de listagem">Sobra se vender</th>
+        <th title="o que sobra se vender hoje - o que você pagou (não realizado)">Resultado</th>
+        <th title="vale anunciar agora ou segurar? + tendência do preço">Veredito</th>
+        <th title="preço inicial sugerido e melhor hora pra anunciar (fechar no horário quente)">Anunciar</th><th></th>
+      </tr></thead><tbody></tbody>
+    </table></div>
+    <div class="empty" id="stockEmpty" hidden>nenhum item em estoque</div>
+    <div class="row-inline" id="stockPager" style="justify-content:center"></div>
+  </div>
+
+  <h2 id="secDone" class="sec" data-sec="done" title="clique pra expandir/recolher">Vendidas e encerradas <span class="secn mut"></span></h2>
+  <div class="panel"><div style="overflow-x:auto"><table id="doneTable">
+    <thead><tr>
+      <th>Item</th><th>Comprei</th><th>Vendi</th><th>Taxa venda + listagem</th>
+      <th>Lucro líquido</th><th>Data</th><th></th>
+    </tr></thead><tbody></tbody>
+  </table></div><div class="empty" id="doneEmpty" hidden>nada aqui ainda</div>
+  <div class="row-inline" id="doneMoreWrap" style="justify-content:center"></div></div>
+
+  <h2 id="secHist" class="sec" data-sec="hist" title="clique pra expandir/recolher">Histórico de análises <span class="secn mut"></span></h2>
+  <div class="panel">
+    <div class="row-inline">
+      <span class="mut" id="histNote" title="Lendário+ com margem grande na última hora">últimas 24h · só excelentes</span>
+    </div>
+    <div class="pnl-grid" id="histGrid"></div>
+    <div style="overflow-x:auto;margin-top:10px"><table id="histTable">
+      <thead><tr>
+        <th>Item</th><th>Monitorado em</th><th>Preço quando vi</th>
+        <th>Revender até</th><th>Fechou em</th><th>Resultado</th>
+        <th title="lucro se você tivesse arrematado (1 coin acima do fechamento) e revendido ao preço justo, menos o rake">Lucro possível</th>
+      </tr></thead><tbody></tbody>
+    </table><div class="empty" id="histEmpty" hidden>nenhuma análise no período</div>
+    <div class="row-inline" id="histPager" style="justify-content:center"></div></div>
+  </div>
+
+  <h2 id="secAppr" class="sec" data-sec="appr" title="clique pra expandir/recolher">Avaliar item <span class="secn mut"></span></h2>
+  <div class="panel">
+    <div class="row-inline">
+      <input type="text" id="apId" placeholder="nº do leilão (ex.: 359654)" style="width:210px">
+      <button id="apGo">Avaliar</button>
+      <span class="mut" id="apNote"></span>
+    </div>
+    <div id="apOut" style="margin-top:10px"></div>
+  </div>
+
+  <h2 id="secAttrs" class="sec" data-sec="attrs" title="clique pra expandir/recolher">Valor dos atributos <span class="secn mut"></span></h2>
+  <div class="panel">
+    <div class="mut" style="font-size:12px;margin:0 2px 8px">Quanto cada atributo <strong>multiplica</strong> o preço de um item, aprendido do histórico de vendas (regressão com controle por item e raridade). Quase metade das vendas fecha no piso de 25 coins, e o modelo <strong>desconta esse piso</strong> (senão o efeito real ficaria escondido). Os efeitos <strong>multiplicam</strong> entre si: é assim que Exp vale +10 num item barato e bem mais quando combinado com Crit Damage. Testado em vendas que o modelo não viu: acerta o nível do Exp e prevê melhor que o método antigo (atributos que não aparecem aqui não têm prêmio mensurável). Também é o que alimenta o preço justo dos itens quando falta histórico exato da variante.</div>
+    <div id="attrVals"></div>
+  </div>
+
+  <h2 id="secLookup">Consultar preço de venda</h2>
+  <div class="panel">
+    <div class="row-inline">
+      <input type="text" id="lkQ" placeholder="nome do item (ex.: lion shield)" style="width:240px">
+      <button id="lkBtn">buscar</button>
+      <span class="seg" id="lkSeg">
+        <button data-lkdays="7">7d</button><button data-lkdays="30">30d</button>
+      </span>
+      <span class="mut" id="lkNote"></span>
+    </div>
+    <div style="overflow-x:auto;margin-top:10px"><table id="lkTable">
+      <thead><tr>
+        <th>Variante</th>
+        <th title="vale listar agora ou segurar? verde = poucos concorrentes, bom momento; vermelho = mercado cheio, seu item vai competir e vender barato">Vender agora?</th>
+        <th>Vendas</th><th>Preço de venda (mediana · p25-p75 · min-máx)</th>
+        <th>Lances</th>
+        <th title="anúncios iguais ativos agora; embaixo, vendedores por comprador até fecharem. Muitos = preço cai na revenda">Em aberto agora</th>
+        <th title="preço inicial que a base histórica recomenda pra esse item">Preço inicial sugerido</th>
+        <th title="mediana - 10% rake - taxa de listagem">Você recebe</th>
+      </tr></thead><tbody></tbody>
+    </table><div class="empty" id="lkEmpty" hidden>digite um item e busque</div></div>
+  </div>
+
+  <h2 id="secPnl">Lucro</h2>
+  <div class="panel">
+    <div class="row-inline">
+      <label>Capital inicial (coins):
+        <input type="number" id="initCap" min="0" step="1"></label>
+      <button id="saveCap">salvar</button>
+      <label style="margin-left:12px"><input type="checkbox" id="feeChk">
+        descontar taxa de listagem (5M gold ≈ <span id="feeCoins">?</span> coins)</label>
+    </div>
+    <div class="pnl-grid" id="pnlGrid"></div>
+    <div class="row-inline" style="margin-top:14px">
+      <strong>Período:</strong>
+      <input type="date" id="fromD"><span class="mut">até</span>
+      <input type="date" id="toD">
+      <span id="rangeResult" class="num"></span>
+    </div>
+  </div>
+
+  <p class="mut" style="margin-top:20px;font-size:12px">
+    Leitura da API pública do jogo. Não dá lance nem compra - você age
+    manualmente em <a href="https://baiakidle.com/#/market" target="_blank">baiakidle.com</a>.
+  </p>
+</div>
+
+<button id="toTop" class="totop" hidden title="voltar ao topo">↑</button>
+<div id="itip" class="itip" hidden></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let STATE = null;
+let FLASH = {rarity: 4, gap: 20, secs: 60};
+const isFlash = o => o.kind === "gear" && (o.rarity||0) >= FLASH.rarity
+  && (o.suggested_max - o.current_price) >= FLASH.gap
+  && o.secs_left > 0 && o.secs_left <= FLASH.secs;
+
+const fmt = n => (n==null || isNaN(n)) ? "-" : Math.round(n).toLocaleString("pt-BR");
+const sign = n => (n>0?"+":"") + fmt(n);
+const cls = n => n>0 ? "pos" : n<0 ? "neg" : "";
+
+function secsTxt(s){
+  if(s==null) return "-";
+  if(s<=0) return "encerrado";
+  const h=Math.floor(s/3600), m=Math.floor(s%3600/60), ss=Math.floor(s%60);
+  return h ? `${h}h${String(m).padStart(2,"0")}m` : m ? `${m}m${String(ss).padStart(2,"0")}s` : `${ss}s`;
+}
+
+async function api(method, path, body){
+  const r = await fetch(path, {method,
+    headers: body ? {"Content-Type":"application/json"} : {},
+    body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok || j.error) throw new Error(j.error || r.status);
+  return j;
+}
+
+async function load(){
+  try{
+    STATE = await api("GET","/api/state");
+    render();
+  }catch(e){ $("#status").textContent = "erro: "+e.message; }
+}
+
+function render(){
+  const s = STATE, m = s.meta;
+  FLASH = {rarity: m.flash_min_rarity ?? 4, gap: m.flash_min_gap_coins ?? 20,
+           secs: m.flash_max_seconds ?? 60};
+  const last = m.last_scan ? new Date(m.last_scan).toLocaleTimeString("pt-BR") : "-";
+  $("#status").innerHTML =
+    `<span class="dot live"></span>` +
+    `varredura ${last} · novas oportunidades a cada ${Math.round(m.poll_seconds/60)}min` +
+    ` · preços a cada ${m.track_poll_seconds}s`;
+
+  renderChars(s);
+  applySecs();
+  renderOpps(s.opportunities);
+  renderGoldMkt(s.gold_market);
+  renderOpen(s.positions);
+  renderStock(s.stock);
+  renderCraft(s.craft);
+  renderBoss(s.boss);
+  renderAttrs(s.attr_values);
+  renderWatch(s.watches || [], s.meta.watch_alert_seconds || 300);
+  renderBounties(s.bounties || []);
+  renderDone(s.positions);
+  renderPnl(s.pnl);
+  renderRange();
+}
+
+const VOC_ABBR = {knight:"EK",paladin:"RP",sorcerer:"MS",druid:"ED",monk:"MK"};
+
+// ---- seções recolhíveis + navbar
+// Posições abertas / Vendidas / Histórico nascem recolhidas. Posições abertas
+// abre sozinha se há posição de verdade, e nunca esconde um lance coberto ou
+// leilão encerrado (precisa da sua ação). A escolha do clique vale até recarregar.
+const secUser = {};
+const openPos = ps => ps.filter(p => p.state === "bidding");       // leilões em andamento
+const stockPos = ps => ps.filter(p => p.state === "holding");     // arrematados, ainda com você
+const needsAct = p => {
+  const ended = p.auction_status !== "active" || (p.auction_secs_left ?? 1) <= 0;
+  return p.state === "bidding" && (ended || (p.last_auction_price || 0) > (p.max_bid || 0));
+};
+function secIsOpen(id){
+  const ps = (STATE && STATE.positions) || [];
+  if(id === "open"){
+    if(ps.some(needsAct)) return true;
+    return secUser.open ?? openPos(ps).length > 0;
+  }
+  if(id === "stock") return secUser.stock ?? stockPos(ps).length > 0;
+  if(id === "boss") return secUser.boss ?? !!(STATE && STATE.boss && STATE.boss.summary.good > 0);
+  if(id === "craft") return secUser.craft ?? (((STATE && STATE.craft && STATE.craft.rows) || []).length > 0);
+  return secUser[id] ?? false;
+}
+function applySecs(){
+  const ps = (STATE && STATE.positions) || [], opps = (STATE && STATE.opportunities) || [];
+  const n = {open: openPos(ps).length,
+             stock: stockPos(ps).length,
+             craft: ((STATE && STATE.craft && STATE.craft.rows) || []).length,
+             boss: (STATE && STATE.boss) ? STATE.boss.summary.good : null,
+             done: ps.filter(p => ["sold", "lost", "used"].includes(p.state)).length,
+             hist: HIST ? HIST.total : null};
+  document.querySelectorAll("h2.sec").forEach(h => {
+    const id = h.dataset.sec, open = secIsOpen(id);
+    h.classList.toggle("open", open);
+    h.nextElementSibling.classList.toggle("sec-collapsed", !open);
+    h.querySelector(".secn").textContent = n[id] != null ? `(${n[id]})` : "";
+  });
+  const cnt = {gear: opps.filter(o => o.kind === "gear").length,
+               stack: opps.filter(o => o.kind === "stack").length,
+               gold: opps.filter(o => o.kind === "gold").length, open: n.open, stock: n.stock,
+               craft: ((STATE && STATE.craft && STATE.craft.rows) || []).length,
+               boss: (STATE && STATE.boss) ? STATE.boss.summary.good : 0,
+               watch: ((STATE && STATE.watches) || []).filter(w => w.status === "active").length,
+               bounty: ((STATE && STATE.bounties) || []).reduce((a, b) => a + (b.good_count || 0), 0)};
+  document.querySelectorAll("[data-cnt]").forEach(el => { el.textContent = cnt[el.dataset.cnt] || ""; });
+  $("#nav a[href='#secOpen']").classList.toggle("alert", ps.some(needsAct));
+  $("#nav a[href='#secBounty']").classList.toggle("alert", cnt.bounty > 0);
+  $("#navGold").hidden = !!(STATE && STATE.meta.filter_mode === "chars");
+}
+document.addEventListener("click", e => {
+  const h = e.target.closest("h2.sec");
+  if(!h) return;
+  secUser[h.dataset.sec] = !secIsOpen(h.dataset.sec);
+  applySecs();
+});
+$("#nav").addEventListener("click", e => {
+  const a = e.target.closest("a");
+  if(!a) return;
+  e.preventDefault();
+  const h = document.getElementById(a.getAttribute("href").slice(1));
+  if(h.classList.contains("sec")){ secUser[h.dataset.sec] = true; applySecs(); }
+  h.scrollIntoView({behavior: "smooth", block: "start"});
+});
+$("#toTop").onclick = () => scrollTo({top: 0, behavior: "smooth"});
+let spyBusy = false;
+addEventListener("scroll", () => {          // marca no navbar a seção que está no topo
+  if(spyBusy) return;
+  spyBusy = true;
+  requestAnimationFrame(() => {
+    spyBusy = false;
+    $("#toTop").hidden = scrollY < 400;          // botão "voltar ao topo"
+    let cur = null;
+    document.querySelectorAll("h2[id]").forEach(h => {
+      if(h.offsetParent !== null && h.getBoundingClientRect().top <= 90) cur = h.id;
+    });
+    document.querySelectorAll("#nav a").forEach(a =>
+      a.classList.toggle("on", a.getAttribute("href") === "#" + cur));
+  });
+}, {passive: true});
+
+function renderChars(s){
+  const mode = s.meta.filter_mode;
+  document.querySelectorAll("#modeSeg button").forEach(b =>
+    b.classList.toggle("on", b.dataset.mode === mode));
+  const chips = $("#charChips");
+  chips.innerHTML = (s.characters || []).map(c =>
+    `<span class="chip ${c.active ? "" : "off"}">
+       <span data-toggle="${c.id}" style="cursor:pointer">${c.name} · ${VOC_ABBR[c.vocation]||c.vocation} Lv${c.level}</span>
+       <button data-delchar="${c.id}">✕</button></span>`).join("");
+  const noneActive = mode === "chars" && !(s.characters||[]).some(c => c.active);
+  $("#charHint").hidden = !noneActive;
+  // esconde a seção Gold no modo personagens
+  document.querySelectorAll("h2").forEach(h => {
+    if(h.textContent.includes("Gold"))
+      h.hidden = h.nextElementSibling.hidden = (mode === "chars");
+  });
+}
+
+const TIER_KEY = {"boa":"boa","muito boa":"muito","excelente":"excelente"};
+const badge = t => `<span class="badge ${TIER_KEY[t]||"boa"}">${t}</span>`;
+const RAR = {0:["Comum","#cfd2d8"],1:["Incomum","#57b85a"],2:["Raro","#4a90e8"],
+  3:["Épico","#a05be0"],4:["Lendário","#e5a13a"],5:["Mítico","#e0555a"]};
+const rarBadge = t => { const r = RAR[t] || RAR[0];
+  return `<span style="color:${r[1]};font-weight:600">${r[0]}</span>`; };
+function goldFmt(m){                       // m = milhoes de gold
+  if(m >= 1000) return (m/1000).toFixed(m>=10000?0:1)+"B";
+  return Math.round(m)+"M";
+}
+function oppActions(o){
+  return `<td style="white-space:nowrap">
+    <button data-bid="${o.auction_id}" data-max="${o.suggested_max}">Dar lance</button>
+    <button class="ghost" data-dismiss="${o.auction_id}">Ignorar</button></td>`;
+}
+const esc = s => String(s).replace(/"/g,"&quot;");
+const copyBtn = name => `<button class="cp" data-copy="${esc(name)}" title="copiar nome">⧉</button>`;
+const liqCell = o =>
+  `<td class="num">${(+o.sales_per_day).toFixed(1)}/d <span class="mut">n${o.n}</span></td>`;
+
+const reqLine = o => {
+  const bits = [];
+  if(o.req_vocs) bits.push(o.req_vocs.map(v=>VOC_ABBR[v]||v).join("/"));
+  if(o.req_level) bits.push("Lv " + o.req_level);
+  if(o.item_class) bits.push("Classe " + o.item_class);
+  return bits.length ? `<div class="mut" style="font-size:11px">${bits.join(" · ")}</div>` : "";
+};
+const forgeLine = o => o.forge_text
+  ? `<div style="font-size:11px;color:#e0a92e">⚒ ${o.forge_text}</div>` : "";
+// um atributo por linha (facilita ver o Lv. de cada um), igual o tooltip
+const attrsBlock = (text, score) => {
+  if(!text) return "";
+  return text.split(", ").map(a => `<div class="mut" style="font-size:11px">${a}</div>`).join("")
+    + (score != null ? `<div class="mut" style="font-size:10px">score ${(+score).toFixed(1)}</div>` : "");
+};
+const attrsLine = o => attrsBlock(o.attrs_text, o.attr_score) + upgLine(o.upg);
+// Exp já upado: comprar pronto ou comprar o nível 1 e upar (gemas → coins pela taxa do gold)
+const upgLine = u => !u ? "" :
+  `<div style="font-size:11px" class="${u.pick === "pronto" ? "pos" : "warn-t"}" title="upar sozinho = preço do nível 1 (${fmt(u.base)}) + ${u.gems} gemas ≈ ${fmt(u.cost)} coins (taxa atual do gold). Média: o resultado real varia (tentativa e erro).">`
+  + `Exp Lv.${u.lvl}: ${u.pick === "pronto" ? `comprar pronto sai ${fmt(u.save)} mais barato que upar` : `upar sozinho sai ${fmt(-u.save)} mais barato`}`
+  + ` <span class="mut">(upar ≈ ${fmt(u.diy)})</span></div>`;
+
+// dados base do item (ataque/defesa/armadura/skills/absorção/imbuements)
+// escondidos atrás de um "mais detalhes" pra não poluir a linha
+const statsOpen = new Set();
+function formatStats(st){
+  const p = [];
+  if(st.atk != null) p.push(`Ataque ${st.atk}`);
+  if(st.def != null) p.push(`Defesa ${st.def}`);
+  if(st.arm != null) p.push(`Armadura ${st.arm}`);
+  if(st.elementAtk != null) p.push(`Dano elemental +${st.elementAtk}${st.elementType?` (${st.elementType})`:""}`);
+  if(st.wandMin != null || st.wandMax != null) p.push(`Dano da varinha ${st.wandMin ?? "?"}-${st.wandMax ?? "?"}`);
+  if(st.manaShot != null) p.push(`Mana por tiro ${st.manaShot}`);
+  if(st.range != null) p.push(`Alcance ${st.range}`);
+  if(st.hitChance != null) p.push(`Chance de acerto +${st.hitChance}%`);
+  if(st.maxHitChance != null) p.push(`Chance de acerto máx. ${st.maxHitChance}%`);
+  if(st.critChance != null) p.push(`Chance crítica +${st.critChance}%`);
+  if(st.critDmg != null) p.push(`Dano crítico +${st.critDmg}%`);
+  if(st.cleave != null) p.push(`Cleave ${st.cleave}%`);
+  if(st.reflect != null) p.push(`Reflete dano ${st.reflect}%`);
+  if(st.lifeLeech != null) p.push(`Life leech ${st.lifeLeech}%`);
+  if(st.manaLeech != null) p.push(`Mana leech ${st.manaLeech}%`);
+  if(st.moveSpeed != null) p.push(`Velocidade +${st.moveSpeed}`);
+  if(st.mShieldFlat != null || st.mShieldPct != null)
+    p.push(`Escudo mágico ${st.mShieldFlat ?? 0}${st.mShieldPct ? ` +${st.mShieldPct}%` : ""}`);
+  if(st.charges != null) p.push(`Cargas ${st.charges}`);
+  if(st.twoHanded) p.push("Duas mãos");
+  if(st.wt) p.push(`Tipo ${st.wt}`);
+  if(st.ammoType) p.push(`Munição ${st.ammoType}`);
+  if(st.skills) for(const k in st.skills) p.push(`Skill ${k} +${st.skills[k]}`);
+  if(st.absorb) p.push("Absorção " + Object.keys(st.absorb).map(k=>`${k} ${st.absorb[k]}%`).join(", "));
+  if(st.magicEl) p.push("Dano mágico elemental " + Object.keys(st.magicEl).map(k=>`${k} +${st.magicEl[k]}`).join(", "));
+  if(st.imb_slots != null) p.push(`Slots de imbuement ${st.imb_slots}`
+    + (st.imb_cats ? ` (${st.imb_cats.join(", ")})` : ""));
+  if(st.hpRegen) p.push(`Regen HP ${st.hpRegen}/s`);
+  if(st.mpRegen) p.push(`Regen MP ${st.mpRegen}/s`);
+  if(st.durationSec) p.push(`Duração ${st.durationSec}s`);
+  return p.join(" · ");
+}
+function statsToggle(st, key){
+  if(!st || !Object.keys(st).length) return "";
+  const open = statsOpen.has(key);
+  return `<span class="stt" data-stt="${key}">${open ? "▾ menos detalhes" : "▸ mais detalhes"}</span>`
+    + `<div class="mut" style="font-size:11px" data-sttbody="${key}" ${open ? "" : "hidden"}>${formatStats(st)}</div>`;
+}
+
+// tooltip no estilo do jogo (aparece ao passar o mouse no nome do item)
+const SLOT_PT = {weapon:"Arma", armor:"Armadura", helmet:"Elmo", shield:"Escudo",
+  amulet:"Amuleto", ring:"Anel", legs:"Calça", boots:"Botas"};
+// jogo mostra sword/axe/club/fist juntos como "Melee" (confirmado no
+// tooltip real do soulmaimer: skills:{club:5} -> "Melee +5")
+const SKILL_PT = {magic:"Magic Level", sword:"Melee", axe:"Melee", club:"Melee",
+  fist:"Melee", distance:"Distance", shielding:"Shielding"};
+const TIP = new Map();
+// icone real do jogo - mesma API que o market oficial usa (id do objeto)
+const itemIconUrl = id => `https://baiakidle.com/api/things/object/${id}.png?v=4`;
+
+// só equipamento tem ficha completa (raridade/slot/combate); outros tipos
+// (lote, gold) ficam com o nome simples, sem tooltip nem miniatura
+function itemName(name, key, extra){
+  if(!extra) return name;
+  TIP.set(key, {name, ...extra});
+  const id = extra.item_stats && extra.item_stats.id;
+  const thumb = id
+    ? `<img class="ithumb" src="${itemIconUrl(id)}" loading="lazy" onerror="this.remove()">` : "";
+  return thumb + `<span class="iname" data-tip="${key}">${name}</span>`;
+}
+
+function tipHtml(d){
+  const rc = RAR[d.rarity] || RAR[0];
+  const st = d.item_stats || {};
+  const combat = [];
+  // jogo soma fisico + elemental no Atk total e detalha a divisão entre
+  // parênteses: "Atk 57 (10 physical + 47 energy)"
+  if(st.atk != null && st.elementAtk != null)
+    combat.push(`Atk ${st.atk + st.elementAtk} (${st.atk} physical + ${st.elementAtk} ${st.elementType||""})`);
+  else if(st.atk != null) combat.push(`Atk ${st.atk}`);
+  else if(st.elementAtk != null) combat.push(`Atk ${st.elementAtk} (${st.elementType||""})`);
+  if(st.def != null) combat.push(`Def ${st.def}`);
+  if(st.arm != null) combat.push(`Arm ${st.arm}`);
+  if(st.wandMin != null || st.wandMax != null) combat.push(`Dano ${st.wandMin ?? "?"}-${st.wandMax ?? "?"}`);
+  if(st.slot === "weapon") combat.push(st.twoHanded ? "Duas mãos" : "Uma mão");
+  // "Bônus" no jogo junta skill boost + proteção elemental + crit/leech/etc,
+  // tudo na mesma lista - não só resistência
+  const bonuses = [];
+  if(st.skills) for(const k in st.skills) bonuses.push([SKILL_PT[k] || k, st.skills[k], ""]);
+  if(st.absorb) for(const k in st.absorb) bonuses.push([`Proteção ${k}`, st.absorb[k], "%"]);
+  if(st.magicEl) for(const k in st.magicEl) bonuses.push([`Dano mágico ${k}`, st.magicEl[k], "%"]);
+  if(st.critChance != null) bonuses.push(["Crit. Chance", st.critChance, "%"]);
+  if(st.critDmg != null) bonuses.push(["Crit. Damage", st.critDmg, "%"]);
+  if(st.hitChance != null) bonuses.push(["Chance de acerto", st.hitChance, "%"]);
+  if(st.lifeLeech != null) bonuses.push(["Life Leech", st.lifeLeech, "%"]);
+  if(st.manaLeech != null) bonuses.push(["Mana Leech", st.manaLeech, "%"]);
+  if(st.moveSpeed != null) bonuses.push(["Velocidade", st.moveSpeed, ""]);
+  return `
+    <div class="itip-h" style="color:${rc[1]}">${rc[0]}</div>
+    <div class="itip-name">${d.name}</div>
+    ${d.item_class ? `<div class="itip-sub">Classe ${d.item_class}</div>` : ""}
+    ${st.id ? `<div class="itip-img"><img src="${itemIconUrl(st.id)}"
+      loading="lazy" onerror="this.parentElement.remove()"></div>` : ""}
+    ${st.slot ? `<div class="itip-row"><span>Tipo</span><span>${SLOT_PT[st.slot]||st.slot}</span></div>` : ""}
+    ${combat.length ? `<div class="itip-row"><span>Combate</span><span>${combat.join(" / ")}</span></div>` : ""}
+    ${d.req_level ? `<div class="itip-row"><span>Nível</span><span>${d.req_level}</span></div>` : ""}
+    ${d.req_vocs ? `<div class="itip-row"><span>Vocações</span><span>${d.req_vocs.map(v=>VOC_ABBR[v]||v).join("/")}</span></div>` : ""}
+    ${bonuses.length ? `<div class="itip-sec">Bônus</div>` + bonuses.map(([k,v,suf]) =>
+      `<div class="itip-row"><span>${k}</span><span class="${v>=0?"pos":"neg"}">${v>=0?"+":""}${v}${suf}</span></div>`).join("") : ""}
+    ${d.attrs_text ? `<div class="itip-sec">Atributos</div>`
+      + d.attrs_text.split(", ").map(a => `<div class="itip-attr">${a}</div>`).join("") : ""}
+  `;
+}
+function showTip(d, anchor){
+  const el = $("#itip");
+  el.innerHTML = tipHtml(d);
+  el.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  el.style.left = "0px"; el.style.top = "0px";
+  requestAnimationFrame(() => {
+    const w = el.offsetWidth, h = el.offsetHeight;
+    let left = Math.min(r.left, window.innerWidth - w - 8);
+    let top = r.bottom + 6;
+    if(top + h > window.innerHeight - 8) top = r.top - h - 6;
+    el.style.left = Math.max(8, left) + "px";
+    el.style.top = Math.max(8, top) + "px";
+  });
+}
+function hideTip(){ $("#itip").hidden = true; }
+document.addEventListener("mouseover", e => {
+  const t = e.target.closest(".iname");
+  if(!t) return;
+  const d = TIP.get(t.dataset.tip);
+  if(d) showTip(d, t);
+});
+document.addEventListener("mouseout", e => {
+  const t = e.target.closest(".iname");
+  if(!t || (e.relatedTarget && t.contains(e.relatedTarget))) return;
+  hideTip();
+});
+
+document.addEventListener("click", e => {
+  const s = e.target.closest(".stt"); if(!s) return;
+  const key = s.dataset.stt;
+  const body = document.querySelector(`[data-sttbody="${key}"]`);
+  const open = statsOpen.has(key);
+  if(open){ statsOpen.delete(key); s.textContent = "▸ mais detalhes"; }
+  else { statsOpen.add(key); s.textContent = "▾ menos detalhes"; }
+  if(body) body.hidden = open;
+});
+
+const priceTip = o =>
+  `Preço atual ${fmt(o.current_price)}: ${Math.round(o.discount*100)}% abaixo do preço justo (${fmt(o.median)}). `
+  + `REVENDER - compre até ${fmt(o.suggested_max)} p/ lucro folgado; ${fmt(o.breakeven)} empata (rake 10%); acima, prejuízo. `
+  + `USAR - até ${fmt(o.median)} você não paga acima do mercado.`;
+
+// célula de preço atual, colorida: verde = dá pra revender agora, âmbar = só pra uso
+const priceCell = o => {
+  const c = o.current_price <= o.suggested_max ? "pos"
+          : o.current_price <= o.median ? "warn-t" : "";
+  return `<td class="num" title="${esc(priceTip(o))}">
+    <span class="${c}">${fmt(o.current_price)}</span>
+    <div class="mut" style="font-size:10px">-${Math.round(o.discount*100)}%</div></td>`;
+};
+const sellCell = o =>
+  `<td class="num">${fmt(o.suggested_max)}<div class="mut" style="font-size:10px">empata ${fmt(o.breakeven)}</div></td>`;
+const VERDICT = {
+  revender: ["💰 revender", "pos", "poucos vendedores por comprador e o item gira: dá pra comprar barato e revender com lucro"],
+  usar: ["🛡 só usar", "warn-t", "muitos anúncios fechando junto (ou pouca liquidez): revender derrubaria o preço. Só compensa se for equipar"],
+};
+// selo de tendência (sensação de mercado): mediana dos últimos 2 dias vs o
+// resto da semana. Sempre visível quando há histórico recente pra medir.
+const trendLine = t => {
+  if(t == null)
+    return `<div class="tr" style="margin-top:2px;background:transparent;color:var(--mut)" title="poucas vendas nos últimos 2 dias pra medir tendência">tend. s/ dado</div>`;
+  const pct = Math.round(t * 100);
+  if(Math.abs(t) < 0.05)
+    return `<div class="tr" style="margin-top:2px;background:var(--panel2);color:var(--mut)" title="preço estável vs a semana">➡ estável</div>`;
+  const dn = t < 0;
+  const tip = `preço ${dn ? "caindo" : "subindo"} ~${Math.abs(pct)}% (mediana dos últimos 2 dias vs o resto da semana)`
+    + (dn ? " - parte do 'desconto' é só a queda; melhor usar que revender" : "");
+  return `<div class="tr ${dn ? "dn" : "up"}" style="margin-top:2px" title="${esc(tip)}">${dn ? "📉" : "📈"} ${pct > 0 ? "+" : ""}${pct}%</div>`;
+};
+const qualityCell = o => {
+  const v = (o.kind !== "gold") && VERDICT[o.verdict];
+  return `<td>${badge(o.tier)}` +
+    (v ? `<div class="${v[1]}" style="font-size:10px;margin-top:2px" title="${v[2]}">${v[0]}</div>` : "") +
+    trendLine(o.trend) + `</td>`;
+};
+const supplyCell = o => {
+  const p = o.supply_pressure, s = o.supply;
+  if(s == null) return `<td class="num mut">-</td>`;
+  if(!s) return `<td class="num pos">0 <span class="mut" style="font-size:10px">sem concorrência</span></td>`;
+  const c = p <= 1 ? "pos" : p <= 2 ? "warn-t" : "neg";
+  const tip = `${s} anúncios iguais ativos (${o.closing_6h||s} fecham em ~6h - leilões são curtos). `
+    + `${p}x mais vendedores que compradores até fecharem` + (p > 1 ? " - preço sofre na revenda." : ".");
+  return `<td class="num" title="${tip}"><span class="${c}">${fmt(s)}</span>` +
+    `<div class="mut" style="font-size:10px">${p}x demanda</div></td>`;
+};
+
+function renderOpps(opps){
+  const g = {gear:[], stack:[], gold:[]};
+  for(const o of opps) (g[o.kind] || g.gear).push(o);
+
+  fill("#gearTable", "#gearEmpty", g.gear, o => `
+    <td>${itemName(o.name, "o"+o.auction_id, {rarity:o.rarity, item_class:o.item_class, req_vocs:o.req_vocs, req_level:o.req_level, attrs_text:o.attrs_text, item_stats:o.item_stats})} ${copyBtn(o.name)}${reqLine(o)}${forgeLine(o)}${attrsLine(o)}${statsToggle(o.item_stats, "o"+o.auction_id)}</td>
+    <td>${rarBadge(o.rarity)}</td>
+    ${qualityCell(o)}
+    ${priceCell(o)}
+    ${sellCell(o)}
+    <td class="num mut">${fmt(o.median)}<div style="font-size:10px">base: ${o.basis||"-"}</div></td>
+    <td class="num">${fmt(o.est_saving)}</td>
+    ${liqCell(o)}
+    ${supplyCell(o)}
+    <td class="num">${o.bid_count}</td>
+    <td class="num" data-cd="${o.ends_at}">${secsTxt(o.secs_left)}</td>
+    ${oppActions(o)}`);
+
+  fill("#stackTable", "#stackEmpty", g.stack, o => `
+    <td>${o.name} ${copyBtn(o.name)}</td>
+    ${qualityCell(o)}
+    ${priceCell(o)}
+    <td class="num mut">${(+o.unit_price).toPrecision(3)}</td>
+    ${sellCell(o)}
+    <td class="num mut">${(+o.median).toPrecision(3)}</td>
+    <td class="num">${fmt(o.est_saving)}</td>
+    ${liqCell(o)}
+    ${supplyCell(o)}
+    <td class="num">${o.bid_count}</td>
+    <td class="num" data-cd="${o.ends_at}">${secsTxt(o.secs_left)}</td>
+    ${oppActions(o)}`);
+
+  const useMin = Math.round((STATE.meta.gold_use_min_discount ?? 0.10) * 100);
+  fill("#goldTable", "#goldEmpty", g.gold, o => `
+    <td class="num">${goldFmt(o.current_price / o.unit_price)}${o.anchor
+      ? `<div class="mut" style="font-size:10px" title="preço redondo do vendedor (20 ou 25 por 100M): tende a não subir até fechar - o desconto que você vê é o que você leva">preço redondo</div>` : ""}</td>
+    <td>${badge(o.tier)}${trendLine(o.trend)}</td>
+    <td class="num" title="${esc(`Preço atual ${fmt(o.current_price)} = ${Math.round(o.discount*100)}% abaixo da taxa. Verde = ainda dentro do teto (${fmt(o.suggested_max)}, ${useMin}% abaixo da taxa).`)}">
+      <span class="${o.current_price <= o.suggested_max ? "pos" : "warn-t"}">${fmt(o.current_price)}</span></td>
+    <td class="num">${fmt(o.suggested_max)}<div class="mut" style="font-size:10px">${useMin}% abaixo da taxa</div></td>
+    <td class="num">${(+o.unit_price*100).toFixed(1)}</td>
+    <td class="num mut">${(+o.median*100).toFixed(1)}</td>
+    <td class="num">-${Math.round(o.discount*100)}% <span class="mut">→</span> <strong>~${Math.round(o.exp_disc*100)}%</strong>
+      <div class="mut" style="font-size:10px">${Math.round(o.p_use*100)}% de chance de ≥${useMin}%</div></td>
+    <td class="num">${fmt(o.est_saving)}<div class="mut" style="font-size:10px">~${fmt(o.exp_saving)} ao fechar</div></td>
+    <td class="num">${o.bid_count}</td>
+    <td class="num" data-cd="${o.ends_at}">${secsTxt(o.secs_left)}</td>
+    ${oppActions(o)}`);
+}
+
+// momento do mercado de gold: taxa atual, variação, posição nos últimos 14 dias
+function renderGoldMkt(m){
+  const el = $("#goldMkt");
+  if(!m){ el.innerHTML = `<div class="empty">sem histórico suficiente pra calcular a taxa do gold</div>`; return; }
+  const pc = v => (v > 0 ? "+" : "") + (v * 100).toFixed(1) + "%";
+  const cl = {good:"pos", falling:"warn-t", high:"neg", normal:""}[m.state] || "";
+  const s = m.series, x0 = s[0][0], x1 = s[s.length-1][0];
+  const lo = Math.min(...s.map(p => p[1])), hi = Math.max(...s.map(p => p[1]));
+  const W = 200, H = 46;
+  const pts = s.map(p => `${((p[0]-x0)/(x1-x0)*W).toFixed(1)},${(H-4-(p[1]-lo)/((hi-lo)||1)*(H-8)).toFixed(1)}`).join(" ");
+  el.innerHTML = `<div class="pnl-grid">` +
+    card("Taxa agora", m.rate.toFixed(1), "", `coins por 100M · 14 dias: ${m.lo.toFixed(1)} a ${m.hi.toFixed(1)}`) +
+    card("Variação", `${pc(m.change24)} <span class="mut" style="font-size:12px">24h</span>`, m.change24 < -0.03 ? "warn-t" : "",
+         `${pc(m.change7d)} em 7 dias · oscila ~${m.vol24 != null ? (m.vol24*100).toFixed(0) : "?"}% por dia`) +
+    card("Posição", `${m.pct}º percentil`, "", "nos últimos 14 dias (0 = mais barato)") +
+    card("Momento", m.label, cl, "barato + estável = melhor hora de comprar pra usar") +
+    `<div class="card"><div class="k">Taxa, 14 dias</div>
+       <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="margin-top:6px">
+       <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.6"/></svg></div>` +
+    `</div>` +
+    `<div class="mut" style="font-size:11px;margin-top:6px">coletando retratos dos leilões de gold nos últimos 30 min (preço, lances, tempo restante): ${fmt(m.snap_auctions)} leilões · ${fmt(m.snaps)} retratos - base pra aprender a chance de fechar abaixo do teto.</div>`;
+}
+
+function fill(tableSel, emptySel, rows, rowHtml){
+  const tb = $(tableSel + " tbody"); tb.innerHTML = "";
+  $(emptySel).hidden = rows.length > 0;
+  for(const o of rows){
+    const tr = document.createElement("tr");
+    tr.className = "t-" + (TIER_KEY[o.tier] || "boa") + (isFlash(o) ? " flash-row" : "");
+    if(o.kind === "gear" && (o.rarity||0) >= FLASH.rarity){
+      tr.dataset.flashGap = o.suggested_max - o.current_price;
+      tr.dataset.flashEnds = o.ends_at;
+    }
+    tr.innerHTML = rowHtml(o);
+    tb.appendChild(tr);
+  }
+}
+
+const PER = 10;
+let openPage = 0, donePage = 0;
+const dt = ms => ms ? new Date(ms).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",year:"2-digit",hour:"2-digit",minute:"2-digit"}) : "-";
+function pagerHtml(id, page, total){
+  const pages = Math.max(1, Math.ceil(total / PER));
+  if(pages <= 1) return "";
+  return `<button data-pg="${id}:${page-1}" ${page<=0?"disabled":""}>‹</button>
+    <span class="mut">página ${page+1} de ${pages} · ${total} no total</span>
+    <button data-pg="${id}:${page+1}" ${page>=pages-1?"disabled":""}>›</button>`;
+}
+
+let prevAlert = null;   // null = primeiro render (só semeia, não alerta)
+
+function renderOpen(positions){
+  const tb = $("#openTable tbody"); tb.innerHTML = "";
+  const all = positions.filter(p => p.state==="bidding")
+    .sort((a,b) => (b.opened_at||0) - (a.opened_at||0));
+  $("#openEmpty").hidden = all.length > 0;
+  openPage = Math.min(openPage, Math.max(0, Math.ceil(all.length/PER)-1));
+  $("#openPager").innerHTML = pagerHtml("open", openPage, all.length);
+  const rows = all.slice(openPage*PER, (openPage+1)*PER);
+  const nowAlert = new Set();
+  const newRows = [];
+
+  for(const p of rows){
+    const ended = p.auction_status !== "active" || (p.auction_secs_left ?? 1) <= 0;
+    const out = p.state==="bidding" && !ended && (p.last_auction_price||0) > (p.max_bid||0);
+    const needsAction = p.state==="bidding" && (out || ended);
+    let situ = "", actions = "";
+    if(ended){
+      situ = `<span class="hint">⚠ leilão encerrou - confirme</span>`;
+      actions = `<button data-won="${p.id}" data-price="${p.last_auction_price||''}">Arrematei</button>
+                 <button class="ghost" data-lost="${p.id}">Perdi</button>`;
+    } else if(out){
+      situ = `<span class="tag out">⚠ SUPERADO por ${fmt(p.last_auction_price - p.max_bid)}</span>`;
+      actions = `<button data-raise="${p.id}">Aumentar lance</button>
+                 <button class="ghost" data-lost="${p.id}">Desistir</button>`;
+    } else {
+      situ = `<span class="tag win">dentro do seu lance</span>`;
+      actions = `<button class="ghost" data-raise="${p.id}">Editar lance</button>
+                 <button class="ghost" data-lost="${p.id}">Perdi</button>`;
+    }
+
+    const tr = document.createElement("tr");
+    if(needsAction){
+      tr.dataset.alert = p.id;
+      tr.classList.add("alert-row");               // pulsa enquanto precisar de ação
+      nowAlert.add(p.id);
+      if(prevAlert && !prevAlert.has(p.id)) newRows.push({tr, p, out});
+    }
+    const overRev = p.last_auction_price != null && p.sell_max != null && p.last_auction_price > p.sell_max;
+    const overUse = p.last_auction_price != null && p.use_max != null && p.last_auction_price > p.use_max;
+    tr.innerHTML = `
+      <td>${itemName(p.name, "p"+p.id, p.kind==="gear" ? {rarity:p.rarity, item_class:p.item_class, req_vocs:p.req_vocs, req_level:p.req_level, attrs_text:p.attrs_text, item_stats:p.item_stats} : null)} ${copyBtn(p.name)} <span class="tag">${p.kind}</span>
+        ${p.note?`<div class="mut">${p.note}</div>`:""}</td>
+      <td class="mut" style="font-size:12px">${dt(p.opened_at)}</td>
+      <td class="num">${fmt(p.max_bid)}</td>
+      <td class="num">
+        <span class="${overRev?'neg':'pos'}">${p.sell_max==null?'-':fmt(p.sell_max)}</span>
+        <span class="mut"> / </span>
+        <span class="${overUse?'neg':''}">${p.use_max==null?'-':fmt(p.use_max)}</span>${p.kind === "gold"
+          ? `<div class="mut" style="font-size:10px" title="gold é só pra usar: o primeiro valor é o TETO (desconto mínimo de uso abaixo da taxa), o segundo é a taxa de mercado - sem desconto">teto de uso / taxa</div>` : ""}</td>
+      <td class="num">${fmt(p.last_auction_price)} <span class="mut">${p.last_bid_count??0} lances</span></td>
+      <td>${situ}</td>
+      <td class="num" data-cd="${p.auction_ends_at||0}">${secsTxt(p.auction_secs_left)}</td>
+      <td style="white-space:nowrap">${actions}
+        <button class="ghost" data-del="${p.id}">✕</button></td>`;
+    tb.appendChild(tr);
+  }
+
+  if(newRows.length){
+    const {tr, p, out} = newRows[0];
+    tr.scrollIntoView({behavior:"smooth", block:"center"});
+    const msg = out ? `Lance coberto: ${p.name}` : `Leilão encerrou: ${p.name}`;
+    flashTitle("⚠ " + msg);
+    notify(msg, out ? "O preço passou do seu lance máximo." : "Confirme se arrematou.");
+  }
+  prevAlert = nowAlert;
+}
+
+function flashTitle(msg){
+  clearInterval(flashTitle._iv);
+  const base = "Baiak Market";
+  let on = false, n = 0;
+  flashTitle._iv = setInterval(()=>{
+    document.title = (on = !on) ? msg : base;
+    if(++n > 24){ clearInterval(flashTitle._iv); document.title = base; }
+  }, 650);
+}
+["click","keydown","visibilitychange"].forEach(ev =>
+  document.addEventListener(ev, ()=>{
+    if(document.visibilityState === "visible"){
+      clearInterval(flashTitle._iv); document.title = "Baiak Market";
+    }
+  }));
+
+function notify(title, body){
+  if(!("Notification" in window) || Notification.permission !== "granted") return;
+  try{ new Notification(title, {body, tag:"baiak-overbid"}); }catch(_){}
+}
+
+let prevWatchAlert = null;
+function renderWatch(watches, alertSecs){
+  const tb = $("#watchTable tbody"); tb.innerHTML = "";
+  $("#watchEmpty").hidden = watches.length > 0;
+  const nowAlert = new Set(), newRows = [];
+  for(const w of watches){
+    const ended = w.status !== "active" || (w.secs_left ?? 1) <= 0;
+    const alerting = !ended && w.secs_left <= alertSecs;
+    const tr = document.createElement("tr");
+    if(alerting){
+      tr.classList.add("flash-row");
+      nowAlert.add(w.auction_id);
+      if(prevWatchAlert && !prevWatchAlert.has(w.auction_id)) newRows.push({tr, w});
+    }
+    const approx = w.est ? "≈" : "";
+    const justo = w.fair_lot
+      ? `${approx}${fmt(w.fair_lot)} <span class="mut">/ rev ${approx}${fmt(w.suggested_max)}</span>`
+        + `<div class="mut" style="font-size:10px">${w.est ? "estimativa por tipo" : "base " + w.basis}${w.n ? " · n" + w.n : ""}</div>`
+      : `<span class="mut">sem histórico ainda</span>`;
+    const retorno = w.fair_lot && !ended ? Math.round(w.fair_lot * 0.9 - w.current_price) : null;
+    tr.innerHTML = `
+      <td>${itemName(w.name, "w"+w.auction_id, w.kind==="gear" ? {rarity:w.rarity, item_class:w.item_class, req_vocs:w.req_vocs, req_level:w.req_level, attrs_text:w.attrs_text, item_stats:w.item_stats} : null)} ${copyBtn(w.name)} <span class="tag">#${w.auction_id}</span>
+        ${w.note?`<div class="mut">${w.note}</div>`:""}</td>
+      <td class="num">${ended ? "<span class='mut'>"+(w.status||"encerrado")+"</span>" : fmt(w.current_price)}
+        ${w.fair_lot && !ended ? `<div class="mut" style="font-size:10px">${w.current_price<=w.suggested_max?"abaixo de revender":w.current_price<=w.fair_lot?"abaixo do justo":"acima do justo"}</div>` : ""}</td>
+      <td class="num mut">${justo}</td>
+      <td class="num ${retorno == null ? "" : cls(retorno)}">${retorno == null ? "-" : `<strong>${sign(retorno)}</strong>`}</td>
+      <td class="num">${w.bid_count ?? 0}</td>
+      <td class="num" data-cd="${w.ends_at||0}">${ended ? "encerrado" : secsTxt(w.secs_left)}</td>
+      <td><button class="ghost" data-delwatch="${w.auction_id}">✕</button></td>`;
+    tb.appendChild(tr);
+  }
+  if(newRows.length){
+    const {tr, w} = newRows[0];
+    tr.scrollIntoView({behavior:"smooth", block:"center"});
+    flashTitle(`⏰ ${w.name} encerrando`);
+    notify(`Acompanhando: ${w.name}`, `Faltam poucos minutos. Preço: ${w.current_price}`);
+  }
+  prevWatchAlert = nowAlert;
+}
+const RAR_LIST = [0,1,2,3,4,5];
+function hexA(hex, a){
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+function bountyRow(m, color){
+  const watching = (STATE.watches || []).some(w => w.auction_id === m.auction_id);
+  const urg = !m.good ? "" : m.secs_left <= 60 ? " alert-row" : m.secs_left <= 600 ? " b-soon" : " b-found";
+  const sub = [];
+  if(m.qty) sub.push(m.qty + "x");
+  if(m.gold_millions) sub.push(fmt(m.gold_millions) + "M gold");
+  const tier = m.good ? ` <span class="badge ${TIER_KEY[m.tier]||"boa"}">${m.tier}</span>` : "";
+  // m.est = sem histórico do próprio item: só uma referência grosseira por tipo
+  // (mesmo tipo + raridade + atributos), então sem cor/veredito
+  const approx = m.est ? "≈" : "";
+  const useC = m.has_hist
+    ? `${approx}${fmt(m.use_max ?? m.fair_lot)}<div class="mut" style="font-size:10px">${m.est ? "estimativa por tipo" : "base " + m.basis} · n${m.n}${m.use_max != null && m.use_max < m.fair_lot ? " · limitado pelo custo de upar" : ""}</div>`
+    : `<span class="mut">sem histórico</span>`;
+  const resC = m.has_hist
+    ? `${approx}${fmt(m.suggested_max)}<div class="mut" style="font-size:10px">empata ${fmt(m.breakeven)}</div>`
+    : `<span class="mut">-</span>`;
+  const pc = (!m.has_hist || m.est) ? "" : m.current_price <= m.suggested_max ? "pos" : m.current_price <= m.fair_lot ? "warn-t" : "neg";
+  const verd = (m.has_hist && !m.est)
+    ? `<span class="${m.verdict === "revender" ? "pos" : "warn-t"}">${m.verdict}</span>` + trendLine(m.trend)
+    : `<span class="mut">-</span>`;
+  const disc = m.has_hist ? `<div class="mut" style="font-size:10px">${m.discount >= 0 ? "-" : "+"}${Math.abs(Math.round(m.discount*100))}% vs ${m.est ? "típico" : "justo"}</div>` : "";
+  return `<tr class="${urg.trim()}" style="background:${hexA(color, m.good ? 0.13 : 0.045)}">` +
+    `<td>${itemName(m.name, "b"+m.auction_id, m.kind==="gear" ? {rarity:m.rarity, item_class:m.item_class, req_vocs:m.req_vocs, req_level:m.req_level, attrs_text:m.attrs_text, item_stats:m.stats} : null)} <span class="tag">#${m.auction_id}</span>${tier}` +
+      (sub.length ? `<div class="mut" style="font-size:11px">${sub.join(" · ")}</div>` : "") +
+      attrsBlock(m.attrs_text) + upgLine(m.upg) +
+      statsToggle(m.stats, "b"+m.auction_id) + `</td>` +
+    `<td class="num"><span class="${pc}">${fmt(m.current_price)}</span>${disc}</td>` +
+    `<td class="num" title="quanto vale pagar pra USAR: o preço justo do anúncio (com os atributos dele)">${useC}</td>` +
+    `<td class="num" title="quanto vale pagar pra REVENDER com margem (empata = onde o rake de 10% zera o lucro)">${resC}</td>` +
+    `<td>${verd}</td>` +
+    `<td class="num">${m.bid_count} <span class="mut" style="font-size:10px">lances</span></td>` +
+    `<td class="num" data-cd="${m.ends_at}">${secsTxt(m.secs_left)}</td>` +
+    `<td style="white-space:nowrap"><button data-bid="${m.auction_id}" data-max="${m.suggested_max ?? m.use_max ?? m.fair_lot ?? 25}" data-frombounty="1">Dar lance</button>
+      ${watching ? `<button class="ghost" disabled>✓ acompanhando</button>` : `<button class="ghost" data-addwatch="${m.auction_id}">acompanhar</button>`}</td></tr>`;
+}
+function bountyTable(b){
+  const groups = new Map();
+  for(const m of b.matches){
+    const k = (m.rarity != null) ? m.rarity : (m.kind === "gold" ? "gold" : "lote");
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(m);
+  }
+  const keys = [...groups.keys()].sort((a, z) =>
+    (typeof z === "number" ? z : -1) - (typeof a === "number" ? a : -1));
+  const body = keys.map(k => {
+    const pair = (typeof k === "number") ? RAR[k]
+      : (k === "gold" ? ["Gold", "#e5c07a"] : ["Lote", "#9aa3b2"]);
+    const label = pair[0], color = pair[1];
+    const list = groups.get(k).slice().sort((a, z) =>
+      (a.good?0:1) - (z.good?0:1) || a.secs_left - z.secs_left);
+    const gh = `<tr class="grp"><td colspan="8" style="box-shadow:inset 3px 0 ${color}">` +
+      `<span style="color:${color}">${label}</span> · ${list.length}</td></tr>`;
+    return gh + list.map(m => bountyRow(m, color)).join("");
+  }).join("");
+  return `<div class="bbody" style="overflow-x:auto"><table><thead><tr>` +
+    `<th>Anúncio</th><th>Preço atual</th><th>Usar até</th><th>Revender até</th>` +
+    `<th>Comprar pra</th><th>Lances</th><th>Encerra</th><th></th>` +
+    `</tr></thead><tbody>${body}</tbody></table>` +
+    (b.total > b.matches.length ? `<div class="mut" style="font-size:11px;padding:6px 9px">mostrando ${b.matches.length} de ${b.total} (os bons primeiro, depois os que encerram antes) - use mais filtros pra afunilar</div>` : "") +
+    `</div>`;
+}
+
+let bountyOpen = new Set();
+let prevBountyGood = null;   // null = primeiro render (so' semeia, nao alerta)
+function renderBounties(bounties){
+  fillAttrSelect(); renderAttrChips();
+  $("#bEmpty").hidden = bounties.length > 0;
+  const live = new Set(bounties.map(b => b.id));
+  bountyOpen.forEach(id => { if(!live.has(id)) bountyOpen.delete(id); });
+
+  // oferta boa nova (que nao estava boa no ciclo anterior): pisca o titulo,
+  // manda notificacao e rola ate o card da busca (sem forcar abrir - o
+  // colapso continua do jeito que o usuario deixou)
+  const nowGood = new Set(), newFinds = [];
+  for(const b of bounties) for(const m of b.matches) if(m.good){
+    const key = b.id + ":" + m.auction_id;
+    nowGood.add(key);
+    if(prevBountyGood && !prevBountyGood.has(key)) newFinds.push({b, m});
+  }
+
+  $("#bList").innerHTML = bounties.map(b => {
+    const rarTxt = [...b.kinds.map(k => TYPE_LABEL[k] || k),
+      ...b.vocs.map(v => VOC_ABBR[v] || v), ...b.classes.map(c => "Classe " + c),
+      ...b.rarities.map(r => (RAR[r]||[""])[0]),
+      ...b.attrs.map(a => attrNames()[a] || a)].join(" · ") || "qualquer raridade";
+    let status;
+    if(!b.active) status = `<span class="tag">pausada</span>`;
+    else if(!b.match_count) status = `<span class="mut" style="font-size:12px">🔍 buscando oportunidade...</span>`;
+    else status = `<span class="mut" style="font-size:12px">${b.match_count} à venda</span>`
+      + (b.good_count ? ` <span class="badge excelente">💰 ${b.good_count} boa(s)</span>` : "");
+
+    const canOpen = b.active && b.match_count;
+    const open = canOpen && bountyOpen.has(b.id) ? " bopen" : "";
+    return `<div class="bdet${open}${canOpen ? "" : " nostate"}" data-bid="${b.id}">` +
+      `<div class="bsum"><strong>${b.name || "Filtro"}</strong>` +
+      `<span class="mut" style="font-size:12px">${rarTxt}</span>${status}` +
+      `<span style="flex:1"></span>` +
+      `<button class="ghost" data-bpause="${b.id}" data-active="${b.active?0:1}">${b.active?"pausar":"retomar"}</button>` +
+      `<button class="ghost" data-delbounty="${b.id}">parar</button></div>` +
+      (canOpen ? bountyTable(b) : "") + `</div>`;
+  }).join("");
+
+  if(newFinds.length){
+    const {b, m} = newFinds[0];
+    const card = document.querySelector(`.bdet[data-bid="${b.id}"]`);
+    if(card) card.scrollIntoView({behavior: "smooth", block: "center"});
+    flashTitle("💰 Oferta encontrada");
+    notify("Oferta encontrada" + (b.name ? ` - ${b.name}` : ""),
+           `${m.name}: ${fmt(m.current_price)} coins`);
+  }
+  prevBountyGood = nowGood;
+}
+document.addEventListener("click", e => {
+  const s = e.target.closest(".bsum");
+  if(!s || e.target.closest("button")) return;
+  const d = s.parentElement;
+  if(d.classList.contains("nostate")) return;
+  const id = +d.dataset.bid;
+  if(bountyOpen.has(id)) bountyOpen.delete(id); else bountyOpen.add(id);
+  d.classList.toggle("bopen");
+});
+
+const B_TYPES = [["weapon1h","Arma 1 mão"],["weapon2h","Arma 2 mãos"],["helmet","Elmo"],
+  ["armor","Armadura"],["legs","Perneira"],["boots","Botas"],["shield","Escudo"],
+  ["amulet","Amuleto"],["ring","Anel"],["trinket","Trinket"]];
+const B_VOCS = [["sorcerer","MS"],["druid","ED"],["knight","EK"],["paladin","RP"],["monk","MK"]];
+const TYPE_LABEL = Object.fromEntries(B_TYPES);
+const bAttrs = new Set();
+const chipBtn = (grp, v, label) =>
+  `<button class="chip off" data-bchip="${grp}" data-v="${v}" style="padding:3px 9px">${label}</button>`;
+$("#bKinds").innerHTML = B_TYPES.map(([v,l]) => chipBtn("kinds", v, l)).join("");
+$("#bVocs").innerHTML = B_VOCS.map(([v,l]) => chipBtn("vocs", v, l)).join("");
+$("#bRar").innerHTML = RAR_LIST.map(r => chipBtn("rar", r, (RAR[r]||[""])[0])).join("");
+$("#bCls").innerHTML = [1,2,3,4].map(c => chipBtn("cls", c, "Classe " + c)).join("");
+const attrNames = () => (STATE && STATE.meta && STATE.meta.attr_names) || {};
+
+function renderAttrChips(){
+  $("#bAttrChips").innerHTML = [...bAttrs].map(id =>
+    `<span class="chip">${attrNames()[id] || id}<button data-bdelattr="${id}">✕</button></span>`).join("");
+}
+function fillAttrSelect(){                      // nomes vêm do servidor (analyze.ATTR_NAME)
+  const sel = $("#bAttrSel"), names = attrNames();
+  if(sel.options.length > 1 || !Object.keys(names).length) return;
+  Object.entries(names).sort((a, z) => a[1].localeCompare(z[1]))
+    .forEach(([id, n]) => sel.add(new Option(n, id)));
+}
+$("#bAttrSel").onchange = e => {
+  if(e.target.value){ bAttrs.add(+e.target.value); renderAttrChips(); }
+  e.target.value = "";
+};
+
+async function addBounty(){
+  const name = $("#bName").value.trim();
+  const g = grp => [...document.querySelectorAll(`[data-bchip="${grp}"]:not(.off)`)].map(x => x.dataset.v);
+  const body = {name, rarities:g("rar").map(Number), kinds:g("kinds"), vocs:g("vocs"),
+    classes:g("cls").map(Number), attrs:[...bAttrs]};
+  try{
+    await api("POST","/api/bounty",body);
+    $("#bName").value = "";
+    document.querySelectorAll("[data-bchip]").forEach(x => x.classList.add("off"));
+    bAttrs.clear(); renderAttrChips();
+    $("#bNote").textContent = "";
+    load();
+  }catch(e){ $("#bNote").textContent = "erro: " + e.message; }
+}
+$("#bName").addEventListener("keydown", e => { if(e.key === "Enter") addBounty(); });
+
+function renderWatchResults(res){
+  const el = $("#wResults");
+  if(!res || !res.results.length){ el.innerHTML = res && res.q ? `<span class="mut">nada ativo com "${res.q}"</span>` : ""; return; }
+  el.innerHTML = `<table><thead><tr><th>Item</th><th>Preço</th><th>Encerra</th><th></th></tr></thead><tbody>${res.results.map(r => {
+    const rc = r.rarity!=null ? (RAR[r.rarity]||["",""])[1] : "";
+    const tags = [];
+    if(r.rarity!=null) tags.push(`<span style="color:${rc}">${(RAR[r.rarity]||[""])[0]}</span>`);
+    if(r.qty) tags.push(r.qty+"x");
+    if(r.gold_millions) tags.push(fmt(r.gold_millions)+"M");
+    if(r.attrs_text) tags.push(r.attrs_text);
+    const nm = itemName(r.name, "s"+r.auction_id, r.kind==="gear" ? {rarity:r.rarity, item_class:r.item_class, req_vocs:r.req_vocs, req_level:r.req_level, attrs_text:r.attrs_text, item_stats:r.item_stats} : null);
+    return `<tr><td>${nm} <span class="tag">#${r.auction_id}</span>`
+      + (tags.length?` <span class="mut" style="font-size:11px">${tags.join(" · ")}</span>`:"") + `</td>`
+      + `<td class="num">${fmt(r.current_price)} <span class="mut" style="font-size:10px">${r.bid_count} lances</span></td>`
+      + `<td class="num" data-cd="${r.ends_at}">${secsTxt(Math.round((r.ends_at-Date.now())/1000))}</td>`
+      + `<td><button data-addwatch="${r.auction_id}">acompanhar</button></td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+async function doAppraise(){
+  const id = $("#apId").value.replace(/\D/g, "");
+  if(!id){ $("#apNote").textContent = "digite o número do leilão"; return; }
+  $("#apNote").textContent = "avaliando...";
+  try{
+    const r = await api("GET", `/api/appraise?id=${id}`);
+    $("#apNote").textContent = "";
+    renderAppraisal(r);
+  }catch(e){ $("#apNote").textContent = "erro: " + e.message; $("#apOut").innerHTML = ""; }
+}
+function renderAppraisal(r){
+  const a = r.appraisal, it = r.item, au = r.auction;
+  const hm = ms => new Date(ms).toLocaleTimeString("pt-BR", {hour: "2-digit", minute: "2-digit"});
+  const over = au.price >= a.est ? "neg" : au.price >= a.p25 ? "warn-t" : "pos";
+  const early = au.status === "active" && au.secs_left > 600;
+  const cards = `<div class="pnl-grid">
+    ${card("Valor estimado", fmt(a.est), "", `mediana pelo modelo · o painel mostra ${a.system_fair == null ? "-" : fmt(a.system_fair)}${a.system_basis ? " (base " + a.system_basis + ")" : ""}`)}
+    ${card("Faixa provável", `${fmt(a.p10)} a ${fmt(a.p90)}`, "", "80% das vendas parecidas caem aqui")}
+    ${card("Conservador (p25)", fmt(a.p25), "", "o que se costuma conseguir de fato ao revender")}
+    ${card("Teto p/ revender", fmt(a.resell_max), "", "empata: conservador - rake 10% - taxa")}
+    ${card("Leilão agora", fmt(au.price), over, `${au.bids ?? 0} lances · ${au.status === "active" ? `fecha ${hm(au.ends_at)} (${secsTxt(au.secs_left)})` : au.status}`)}
+  </div>`;
+  const steps = a.steps.map(st => `<tr><td>${st.label}${st.note ? ` <span class="mut" style="font-size:11px">(${st.note})</span>` : ""}</td>
+    <td class="num">${st.mult == null ? "-" : "×" + st.mult}</td><td class="num"><strong>${fmt(st.price)}</strong></td></tr>`).join("");
+  const comps = a.comparables.map(c => `<tr><td class="mut" style="font-size:12px">${dt(c.ends_at)}</td>
+    <td class="num"><strong>${fmt(c.price)}</strong></td><td style="font-size:12px">${c.attrs_text}</td></tr>`).join("");
+  const warns = a.warnings.concat(early ? ["o leilão ainda está no início: o preço atual é o de largada, só fica real perto do fim"] : [])
+    .map(w => `<div class="warn-t" style="font-size:12px">⚠ ${w}</div>`).join("");
+  $("#apOut").innerHTML = `
+    <div style="margin-bottom:8px">${itemName(it.name, "ap"+au.id, {rarity:it.tier, item_class:it.item_class, req_vocs:it.req_vocs, req_level:it.req_level, attrs_text:it.attrs_text, item_stats:it.item_stats})}
+      ${copyBtn(it.name)} ${rarBadge(it.tier)} <span class="tag">#${au.id}</span>${reqLine(it)}${attrsBlock(it.attrs_text)}${statsToggle(it.item_stats, "ap"+au.id)}</div>
+    ${cards}
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:12px">
+      <div><table><thead><tr><th>Como chegou no valor</th><th title="quanto esse fator multiplica o preço">Multiplica</th><th>Preço acumulado</th></tr></thead><tbody>${steps}</tbody></table></div>
+      <div><table><thead><tr><th>Vendas parecidas (30 dias)</th><th>Preço</th><th>Atributos</th></tr></thead><tbody>${comps || `<tr><td colspan="3" class="mut">nenhuma</td></tr>`}</tbody></table>
+        <div class="mut" style="font-size:11px;margin-top:4px">${a.group_n} venda(s) desse item e raridade · ${a.exact_n} idêntica(s) · ordenadas por semelhança (nível do Exp e atributos premium)</div></div>
+    </div>
+    <div style="margin-top:8px">${warns}</div>`;
+}
+$("#apGo").onclick = doAppraise;
+$("#apId").addEventListener("keydown", e => { if(e.key === "Enter") doAppraise(); });
+
+function renderAttrs(a){
+  const box = $("#attrVals");
+  if(!a){ box.innerHTML = `<div class="empty">dados insuficientes pra ajustar o modelo</div>`; return; }
+  const m = Object.fromEntries(a.rows.map(r => [r.name, r]));
+  const x = n => (m[n] ? m[n].mult : 1);
+  const pct = v => (v >= 1 ? "+" : "") + Math.round((v - 1) * 100) + "%";
+  const attrRows = a.rows.filter(r => !r.name.startsWith("Exp Lv")).sort((p, q) => q.mult - p.mult)
+    .map(r => `<tr><td>${r.name}</td><td class="num"><strong class="${r.mult >= 1.15 ? "pos" : "mut"}">×${r.mult}</strong></td><td class="num">${pct(r.mult)}</td><td class="num mut">${r.n}</td></tr>`).join("");
+  const e = x("Exp"), l4 = x("Exp Lv.4+"), l6 = x("Exp Lv.6+"), l8 = x("Exp Lv.8+");
+  const lv = [["1 a 3", 1], ["4 a 5", l4], ["6 a 7", l4 * l6], ["8+", l4 * l6 * l8]]
+    .map(([n, f]) => `<tr><td>Exp nível ${n}</td><td class="num"><strong>×${f.toFixed(2)}</strong></td><td class="num">×${(e * f).toFixed(2)}</td></tr>`).join("");
+  const prem = ["Exp", "Onslaught", "Crit Damage", "Spell Damage"].filter(n => m[n]);
+  const combos = [];
+  for(let i = 0; i < prem.length; i++) for(let j = i + 1; j < prem.length; j++)
+    combos.push([`${prem[i]} + ${prem[j]}`, x(prem[i]) * x(prem[j])]);
+  if(prem.length >= 3) combos.push([`${prem.slice(0, 3).join(" + ")}`, x(prem[0]) * x(prem[1]) * x(prem[2])]);
+  combos.sort((p, q) => q[1] - p[1]);
+  box.innerHTML = `<div style="display:flex;gap:24px;flex-wrap:wrap">
+    <div><table><thead><tr><th>Atributo</th><th title="quanto multiplica o preço do item">Multiplica</th><th>Efeito</th><th title="vendas com esse atributo na janela do modelo">Vendas</th></tr></thead><tbody>${attrRows}</tbody></table></div>
+    <div><table><thead><tr><th>Nível do Exp</th><th title="prêmio a mais sobre o Exp nível 1">vs Exp Lv.1</th><th title="vs item sem Exp">vs sem Exp</th></tr></thead><tbody>${lv}</tbody></table>
+      <table style="margin-top:12px"><thead><tr><th>Combinação (nível 1)</th><th>Multiplica</th></tr></thead><tbody>${combos.map(([n, f]) => `<tr><td>${n}</td><td class="num"><strong>×${f.toFixed(2)}</strong></td></tr>`).join("")}</tbody></table></div>
+  </div>
+  <div class="mut" style="font-size:11px;margin-top:8px">Ajustado em ${a.n} vendas de ${a.groups} itens (nome + raridade). Ex.: um item de 25 coins ganha Exp nível 1 e Crit Damage: ≈ 25 × ${(x("Exp") * x("Crit Damage")).toFixed(2)} (se o item sem atributo está no piso, isso é um teto).</div>`;
+}
+
+function renderBoss(b){
+  if(!b) return;
+  const s = b.summary, c = b.cfg;
+  const ST = {open: ["aberta - vale comprar", "pos"], tight: ["apertada", "warn-t"], closed: ["fechada (o mercado já precificou)", "neg"]}[s.state] || ["sem dados", "mut"];
+  $("#bossCards").innerHTML = `<div class="pnl-grid">
+    ${card("Custo de 500 tokens", s.per500 == null ? "-" : fmt(s.per500), s.per500 == null ? "" : s.per500 < c.addon ? "pos" : "neg", `mediana dos últimos ${s.n_recent} fechamentos${s.per500_p25 != null ? " · p25 " + fmt(s.per500_p25) : ""}`)}
+    ${card("Addon casket", fmt(c.addon), "", `${c.per_addon} tokens = 1 addon (${(c.addon / c.per_addon).toFixed(2)} coin por token)`)}
+    ${card("Arbitragem", ST[0], ST[1], s.pct_below == null ? "" : `${Math.round(s.pct_below * 100)}% dos últimos fechamentos custaram menos de ${c.addon}`)}
+    ${card("Vale tentar agora", s.good, s.good ? "pos" : "", `${s.good > b.rows.length ? `mostrando os ${b.rows.length} que encerram primeiro · ` : ""}${b.n_active} leilões ativos`)}
+  </div>`;
+  const hm = ms => new Date(ms).toLocaleTimeString("pt-BR", {hour: "2-digit", minute: "2-digit"});
+  const V = {good: ["vale tentar até o teto", "pos"]};
+  const tb = $("#bossTable tbody"); tb.innerHTML = "";
+  $("#bossEmpty").hidden = b.rows.length > 0;
+  for(const r of b.rows){
+    const tr = document.createElement("tr");
+    tr.className = "t-excelente";
+    tr.innerHTML = `
+      <td class="num"><strong>${fmt(r.qty)}</strong> ${copyBtn("boss token")}<div class="mut" style="font-size:10px">#${r.auction_id}</div></td>
+      <td class="num">${fmt(r.price)}<div class="mut" style="font-size:10px">${r.bids} lances</div></td>
+      <td class="num ${r.per500 < c.addon ? "pos" : "neg"}">${fmt(r.per500)}</td>
+      <td class="num">${fmt(r.value)}</td>
+      <td class="num"><strong>${fmt(r.teto)}</strong></td>
+      <td class="num mut">${fmt(r.proj)}</td>
+      <td class="num">${Math.round(r.p_ok * 100)}%<div class="mut" style="font-size:10px">de ${r.n_pool}</div></td>
+      <td class="num ${cls(r.ev)}"><strong>${sign(r.ev)}</strong>${r.win_profit != null ? `<div class="mut" style="font-size:10px">se ganhar ≈ ${sign(r.win_profit)}</div>` : ""}</td>
+      <td class="${V[r.state][1]}" style="font-size:12px;font-weight:600">${V[r.state][0]}</td>
+      <td class="mut" style="font-size:12px">${hm(r.ends_at)} (${secsTxt(r.secs_left)})</td>`;
+    tb.appendChild(tr);
+  }
+  $("#bossDaily tbody").innerHTML = b.daily.map(d => `<tr><td>${d.day}</td>
+    <td class="num ${d.per500 < c.addon ? "pos" : "neg"}"><strong>${fmt(d.per500)}</strong></td>
+    <td class="num">${Math.round(d.pct_below * 100)}%</td><td class="num">${d.n}</td><td class="num">${d.bids}</td></tr>`).join("");
+}
+
+let cothersPage = 0;
+function renderCraftOthers(rows){
+  $("#craftOthersTitle").textContent = `Outros itens no mercado (${rows.length})`;
+  cothersPage = Math.min(cothersPage, Math.max(0, Math.ceil(rows.length / PER) - 1));
+  $("#craftOthersPager").innerHTML = pagerHtml("cothers", cothersPage, rows.length);
+  const hm = ms => new Date(ms).toLocaleTimeString("pt-BR", {hour: "2-digit", minute: "2-digit"});
+  const tb = $("#craftOthersTable tbody"); tb.innerHTML = "";
+  for(const r of rows.slice(cothersPage * PER, (cothersPage + 1) * PER)){
+    const off = r.offers.slice(0, 2).map(o => `<div><strong>#${o.auction_id}</strong> ${fmt(o.price)}${o.proj > o.price ? ` → ~${fmt(o.proj)}` : ""} <span class="mut" style="font-size:10px">fecha ${hm(o.ends_at)} (${secsTxt(o.secs_left)}) · ${o.bid_count} lances</span>${r.offers.length > 1 && o.attrs_text ? `<div class="mut" style="font-size:10px">${o.attrs_text}</div>` : ""}</div>`).join("");
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${itemName(r.name, "co"+r.name+r.tier, {rarity:r.tier, item_class:r.item_class, req_vocs:r.req_vocs, req_level:r.req_level, attrs_text:r.offers[0].attrs_text, item_stats:r.item_stats})} ${copyBtn(r.name)} ${rarBadge(r.tier)}${reqLine(r)}${attrsBlock(r.offers[0].attrs_text)}${statsToggle(r.item_stats, "co"+r.name+r.tier)}</td>
+      <td class="warn-t" style="font-size:12px">${r.reason}</td>
+      <td class="num">${r.lvl ? `Exp Lv.${r.lvl}<div class="mut" style="font-size:10px">~${r.gems} gemas</div>` : `<span class="mut">-</span>`}</td>
+      <td class="num">${r.buy_max != null ? `<strong>${fmt(r.buy_max)}</strong>` : "-"}${r.base != null ? `<div class="mut" style="font-size:10px">nível 1 típico ${fmt(r.base)} (n${r.n_base})</div>` : `<div class="mut" style="font-size:10px">sem vendas do nível 1</div>`}</td>
+      <td class="num">${r.sale != null ? `${fmt(r.sale)}<div class="mut" style="font-size:10px">n${r.n_pool}</div>` : `<span class="mut">n${r.n_up} c/ Exp 4+</span>`}</td>
+      <td class="num ${r.profit == null ? "" : cls(r.profit)}">${r.profit == null ? "-" : `<strong>${sign(r.profit)}</strong>`}</td>
+      <td class="num">${r.p_win == null ? "-" : Math.round(r.p_win * 100) + "%"}</td>
+      <td>${off}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+function renderCraft(c){
+  const rows = (c && c.rows) || [];
+  $("#craftEmpty").hidden = rows.length > 0;
+  renderCraftOthers((c && c.others) || []);
+  $("#craftNote").textContent = c ? `${c.in_market} item(ns) de nível 1 com Exp no mercado; ${rows.length} passam nos filtros.` : "";
+  const tb = $("#craftTable tbody"); tb.innerHTML = "";
+  for(const r of rows){
+    const hm = ms => new Date(ms).toLocaleTimeString("pt-BR", {hour: "2-digit", minute: "2-digit"});
+    const offers = r.offers.map(o => `<div class="${o.ok ? "" : "mut"}" style="margin-bottom:4px"><strong>#${o.auction_id}</strong>${r.offers.length > 1 && o.attrs_text ? `<div class="mut" style="font-size:10px">${o.attrs_text}</div>` : ""} agora ${fmt(o.price)}${o.proj > o.price ? ` → deve fechar ~${fmt(o.proj)}` : ""}${o.proj_known ? "" : ` <span class="warn-t">(sem histórico do nível 1: vai subir)</span>`} <span class="${o.ok ? "pos" : "neg"}">→ ${sign(o.profit)}${o.ok ? "" : " (acima do teto)"}</span><div class="mut" style="font-size:10px">pior ${sign(o.worst)} · melhor ${sign(o.best)}${o.fail != null ? ` · se não render ${sign(o.fail)}` : ""}</div><div class="mut" style="font-size:10px">fecha ${hm(o.ends_at)} (${secsTxt(o.secs_left)}) · vende ~${hm(o.sell_at)}+ · ${o.bid_count} lances</div><div style="font-size:10px" class="${SELL_CLS[o.sell_state] || "mut"}" title="anúncios iguais (mesmo item e raridade) já ativos que fecham em volta da hora em que o seu fecharia, contra a média de vendas do item">na hora da venda: ${o.rivals} iguais fechando ±4h · média ${o.per_day}/dia (≈${o.demand} na janela) → <strong>${o.sell_label}</strong></div>${o.alt_at ? `<div class="mut" style="font-size:10px">melhor janela: fechar ~${hm(o.alt_at)} (${o.alt_rivals} iguais) - anuncie ~${hm(o.alt_at - 6 * 3600000)}</div>` : ""}</div>`).join("");
+    const alts = r.alts.length
+      ? `<div class="mut" style="font-size:10px">outros: ${r.alts.map(a => `Lv.${a.lvl} até ${fmt(a.buy_max)}`).join(" · ")}</div>` : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${itemName(r.name, "c"+r.name+r.tier, {rarity:r.tier, item_class:r.item_class, req_vocs:r.req_vocs, req_level:r.req_level, attrs_text:r.offers[0].attrs_text, item_stats:r.item_stats})} ${copyBtn(r.name)} ${rarBadge(r.tier)}${reqLine(r)}${attrsBlock(r.offers[0].attrs_text)}${statsToggle(r.item_stats, "c"+r.name+r.tier)}</td>
+      <td class="num">Exp Lv.${r.lvl}<div class="mut" style="font-size:10px">~${r.gems} gemas</div>${alts}</td>
+      <td class="num"><strong class="pos" style="font-size:15px">${fmt(r.buy_max)}</strong>${r.base != null ? `<div class="mut" style="font-size:10px">nível 1 típico ${fmt(r.base)} (n${r.n_base})</div>` : ""}</td>
+      <td class="num">${fmt(r.cost)}</td>
+      <td class="num">${fmt(r.sale)}<div class="mut" style="font-size:10px">${fmt(r.sale_min)} a ${fmt(r.sale_max)} · n${r.n_pool} · ${r.per_day}/dia${r.n_pool < 5 ? " · amostra pequena" : ""}</div></td>
+      <td class="num ${cls(r.profit)}"><strong>${sign(r.profit)}</strong></td>
+      <td class="num">${Math.round(r.p_win * 100)}%</td>
+      <td>${offers}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+let stockPage = 0;
+const SELL_CLS = {good:"pos", mid:"mut", hold:"neg", slow:"warn-t", floor:"mut"};
+function listWhen(at, now){                          // "agora" / "hoje 14h" / "amanhã 14h"
+  if(now) return "agora";
+  const d = new Date(at);
+  return (d.toDateString() === new Date().toDateString() ? "hoje " : "amanhã ")
+    + String(d.getHours()).padStart(2, "0") + "h";
+}
+function renderStock(st){
+  const items = (st && st.items) || [], sm = (st && st.summary) || {};
+  $("#stockEmpty").hidden = items.length > 0;
+  const when = listWhen(sm.list_at, sm.list_now);
+  $("#stockCards").innerHTML = !items.length ? "" : `<div class="pnl-grid">` +
+    card("Em estoque", `${sm.count} <span class="mut" style="font-size:12px">item(ns)</span>`, "", `custo ${fmt(sm.cost)} coins`) +
+    card("Vale hoje", fmt(sm.value), "", sm.unpriced ? `${sm.unpriced} item(ns) sem base de preço` : "preço justo de cada item") +
+    card("Sobra se vender", fmt(sm.net), "", "depois do rake de 10% e da taxa de listagem") +
+    card("Resultado não realizado", sign(sm.pnl), cls(sm.pnl),
+         sm.invested_priced ? `${(sm.pnl / sm.invested_priced * 100).toFixed(0)}% do que você pagou (nos itens com preço)` : "") +
+    card("Melhor hora de anunciar", when, sm.list_now ? "pos" : "", `pra fechar entre ${sm.close_txt} (mercado mais quente)`) +
+    `</div>`;
+  stockPage = Math.min(stockPage, Math.max(0, Math.ceil(items.length / PER) - 1));
+  $("#stockPager").innerHTML = pagerHtml("stock", stockPage, items.length);
+  const tb = $("#stockTable tbody"); tb.innerHTML = "";
+  for(const p of items.slice(stockPage * PER, (stockPage + 1) * PER)){
+    const sv = p.sell_label
+      ? `<span class="${SELL_CLS[p.sell_state] || "mut"}" style="font-weight:600;font-size:12px">${p.sell_label}</span>`
+      : `<span class="mut">-</span>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${itemName(p.name, "k"+p.id, p.kind==="gear" ? {rarity:p.rarity, item_class:p.item_class, req_vocs:p.req_vocs, req_level:p.req_level, attrs_text:p.attrs_text, item_stats:p.item_stats} : null)} ${copyBtn(p.name)} <span class="tag">${p.kind}</span>${attrsBlock(p.attrs_text)}${p.note ? `<div class="mut">${p.note}</div>` : ""}</td>
+      <td class="num">${fmt(p.buy_price)}<div class="mut" style="font-size:10px">${dt(p.opened_at)} · ${p.days_held}d</div></td>
+      <td class="num">${p.value_now == null ? `<span class="mut">sem base</span>`
+        : `≈${fmt(p.value_now)}<div class="mut" style="font-size:10px">base ${p.basis}${p.n ? " · n" + p.n : ""}</div>`}</td>
+      <td class="num">${p.net_now == null ? "-" : fmt(p.net_now)}</td>
+      <td class="num ${cls(p.pnl)}">${p.pnl == null ? "-" : `<strong>${sign(p.pnl)}</strong>`
+        + (p.pnl_pct != null ? `<div style="font-size:10px">${(p.pnl_pct * 100).toFixed(0)}%</div>` : "")}</td>
+      <td>${sv}${trendLine(p.trend)}</td>
+      <td class="num" title="${esc(p.start_note || "")}">${p.start_price ? fmt(p.start_price) : "-"}<div class="mut" style="font-size:10px">${p.start_price ? "anunciar " + when : ""}</div></td>
+      <td style="white-space:nowrap"><button data-sold="${p.id}">Vendi</button>
+        <button class="ghost" data-used="${p.id}" title="ficou pra uso próprio: sai do estoque, sem venda">Usei</button>
+        <button class="ghost" data-del="${p.id}">✕</button></td>`;
+    tb.appendChild(tr);
+  }
+}
+
+function renderDone(positions){
+  const tb = $("#doneTable tbody"); tb.innerHTML = "";
+  const all = positions.filter(p => ["sold", "lost", "used"].includes(p.state))
+    .sort((a,b) => (b.sold_at||b.opened_at||0) - (a.sold_at||a.opened_at||0));
+  $("#doneEmpty").hidden = all.length > 0;
+  donePage = Math.min(donePage, Math.max(0, Math.ceil(all.length/PER)-1));
+  $("#doneMoreWrap").innerHTML = pagerHtml("done", donePage, all.length);
+  const rows = all.slice(donePage*PER, (donePage+1)*PER);
+  for(const p of rows){
+    const tr = document.createElement("tr");
+    if(p.state === "lost"){
+      tr.innerHTML = `<td>${itemName(p.name, "d"+p.id, p.kind==="gear" ? {rarity:p.rarity, item_class:p.item_class, req_vocs:p.req_vocs, req_level:p.req_level, attrs_text:p.attrs_text, item_stats:p.item_stats} : null)} <span class="tag">${p.kind}</span></td>
+        <td colspan="4" class="mut">não arrematado</td>
+        <td class="mut" style="font-size:12px">${dt(p.opened_at)}</td>
+        <td><button class="ghost" data-reopen="${p.id}">reabrir</button>
+            <button class="ghost" data-del="${p.id}">✕</button></td>`;
+    } else if(p.state === "used"){
+      tr.innerHTML = `<td>${itemName(p.name, "d"+p.id, p.kind==="gear" ? {rarity:p.rarity, item_class:p.item_class, req_vocs:p.req_vocs, req_level:p.req_level, attrs_text:p.attrs_text, item_stats:p.item_stats} : null)} <span class="tag">${p.kind}</span></td>
+        <td class="num">${fmt(p.buy_price)}</td>
+        <td colspan="3" class="mut">usado (não vendido)</td>
+        <td class="mut" style="font-size:12px">${dt(p.sold_at || p.opened_at)}</td>
+        <td style="white-space:nowrap"><button class="ghost" data-reopen="${p.id}">reabrir</button>
+            <button class="ghost" data-del="${p.id}">✕</button></td>`;
+    } else {
+      const feeLine = fmt(Math.round((p.sell_price||0)*STATE.pnl.rake_pct)) +
+        (p.fee_coins ? ` + ${fmt(p.fee_coins)}` : "");
+      tr.innerHTML = `
+        <td>${itemName(p.name, "d"+p.id, p.kind==="gear" ? {rarity:p.rarity, item_class:p.item_class, req_vocs:p.req_vocs, req_level:p.req_level, attrs_text:p.attrs_text, item_stats:p.item_stats} : null)} <span class="tag">${p.kind}</span></td>
+        <td class="num">${fmt(p.buy_price)}</td>
+        <td class="num">${fmt(p.sell_price)}</td>
+        <td class="num mut">${feeLine}</td>
+        <td class="num ${cls(p.net)}"><strong>${sign(p.net)}</strong></td>
+        <td class="mut" style="font-size:12px">${dt(p.sold_at)}</td>
+        <td style="white-space:nowrap">
+          <button class="ghost" data-reopen="${p.id}">reabrir</button>
+          <button class="ghost" data-del="${p.id}">✕</button></td>`;
+    }
+    tb.appendChild(tr);
+  }
+}
+
+function renderPnl(p){
+  if($("#initCap") !== document.activeElement) $("#initCap").value = p.initial_capital || 0;
+  $("#feeChk").checked = p.deduct_listing_fee;
+  $("#feeCoins").textContent = fmt(p.gold_fee_coins);
+  const roi = p.roi==null ? "-" : (p.roi*100).toFixed(1)+"%";
+  $("#pnlGrid").innerHTML = `
+    ${card("Lucro hoje", sign(p.realized_today), cls(p.realized_today))}
+    ${card("Lucro 7 dias", sign(p.realized_7d), cls(p.realized_7d))}
+    ${card("Lucro 30 dias", sign(p.realized_30d), cls(p.realized_30d))}
+    ${card("Lucro total", sign(p.realized_total), cls(p.realized_total))}
+    ${card("ROI", roi, cls(p.realized_total))}
+    ${card("Em aberto", fmt(p.open_cost), "", `${p.open_count} item(ns) a preço de compra`)}
+    ${card("Capital atual ≈", fmt((p.initial_capital||0)+p.realized_total), "")}
+  `;
+}
+const card = (k,v,c,sub="") =>
+  `<div class="card"><div class="k">${k}</div>
+   <div class="v ${c}">${v}</div>${sub?`<div class="k" style="margin-top:4px">${sub}</div>`:""}</div>`;
+
+let HIST = null, histPage = 0;
+// gold é só pra uso: o resultado é medido contra o teto e a taxa, sem revenda
+const OUTCOME_GOLD = {
+  flip:      ["fechou no teto",        "excelente"],
+  use:       ["abaixo da taxa",        "muito"],
+  expensive: ["fechou acima da taxa",  "boa"],
+};
+const OUTCOME = {
+  flip:      ["fechou p/ revenda", "excelente"],
+  use:       ["só p/ uso",         "muito"],
+  expensive: ["fechou caro",       "boa"],
+  expired:   ["expirou s/ venda",  "boa"],
+  floor:     ["fechou no piso",    "boa"],
+};
+async function loadHistory(){
+  try{
+    HIST = await api("GET", `/api/history?days=1&page=${histPage}&flash=1`);
+    histPage = HIST.page;
+    renderHistory();
+  }catch(e){ $("#histNote").textContent = "erro: " + e.message; }
+}
+function renderHistory(){
+  if(!HIST) return;
+  applySecs();
+  const s = HIST.summary, f = s.flash || {};
+  const roi = c => c.cost ? ` · ROI ${(c.profit/c.cost*100).toFixed(0)}%` : "";
+  $("#histGrid").innerHTML = `
+    ${card("Excelentes analisadas", f.n||0, "", "Lendário+ com margem grande na última hora")}
+    ${card("Fecharam p/ revenda", f.flip||0, "", `${f.missed||0} você perdeu`)}
+    ${card("Investimento necessário", fmt(f.cost), "", "pra ter pego essas" + roi({cost:f.cost,profit:f.profit}))}
+    ${card("Lucro que passou", sign(f.profit), cls(f.profit), "só das excelentes")}
+  `;
+  const pages = Math.max(1, Math.ceil(HIST.total / HIST.per));
+  $("#histPager").innerHTML = pages > 1
+    ? `<button ${histPage<=0?"disabled":""} id="histPrev">‹</button>
+       <span class="mut">página ${histPage+1} de ${pages} · ${HIST.total} análises</span>
+       <button ${histPage>=pages-1?"disabled":""} id="histNext">›</button>` : "";
+  const tb = $("#histTable tbody"); tb.innerHTML = "";
+  $("#histEmpty").hidden = HIST.rows.length > 0;
+  for(const r of HIST.rows){
+    const [label, bcls] = (r.kind === "gold" && OUTCOME_GOLD[r.outcome]) || OUTCOME[r.outcome] || ["monitorando", "boa"];
+    const res = r.closed_at
+      ? `<span class="badge ${bcls}">${label}</span>` + (r.acted ? ` <span class="tag">você agiu</span>` : "")
+      : `<span class="mut">em andamento</span>`;
+    const tr = document.createElement("tr");
+    if(r.flash) tr.className = "t-excelente";
+    tr.innerHTML = `
+      <td>${r.flash ? '💎 ' : ''}${itemName(r.name, "h"+r.auction_id, r.kind==="gear" ? {rarity:r.rarity, item_class:r.item_class, req_vocs:r.req_vocs, req_level:r.req_level, attrs_text:r.attrs_text, item_stats:r.item_stats} : null)} ${copyBtn(r.name)}
+        ${r.rarity!=null||r.item_class ? `<div class="mut" style="font-size:11px">${(RAR[r.rarity]||[""])[0]}${r.item_class?` · Classe ${r.item_class}`:""}</div>` : ""}
+        ${forgeLine(r)}${attrsBlock(r.attrs_text)}${statsToggle(r.item_stats, "h"+r.auction_id)}</td>
+      <td class="mut" style="font-size:12px">${new Date(r.detected_at).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</td>
+      <td class="num">${fmt(r.detected_price)} <span class="mut">-${Math.round(r.detected_discount*100)}%</span></td>
+      <td class="num">${fmt(r.suggested_max)}</td>
+      <td class="num">${r.final_price==null ? "-" : fmt(r.final_price) + ` <span class="mut">${r.final_bids||0}b</span>`}</td>
+      <td>${res}</td>
+      <td class="num ${cls(r.hypo_profit)}">${r.hypo_profit==null ? "-" : sign(r.hypo_profit)}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+let LK = null, lkDays = 7;
+async function doLookup(){
+  const q = $("#lkQ").value.trim();
+  if(q.length < 2){ $("#lkNote").textContent = "digite ao menos 2 letras"; return; }
+  $("#lkNote").textContent = "buscando...";
+  try{
+    LK = await api("GET", `/api/lookup?days=${lkDays}&q=${encodeURIComponent(q)}`);
+    renderLookup();
+  }catch(e){ $("#lkNote").textContent = "erro: " + e.message; }
+}
+function renderLookup(){
+  if(!LK) return;
+  document.querySelectorAll("#lkSeg button").forEach(b =>
+    b.classList.toggle("on", +b.dataset.lkdays === lkDays));
+  $("#lkNote").textContent = LK.groups.length
+    ? `${LK.groups.length} variante(s) de "${LK.query}" · ${LK.days} dias`
+    : `nada de "${LK.query}" vendido nos últimos ${LK.days} dias`;
+  const tb = $("#lkTable tbody"); tb.innerHTML = "";
+  $("#lkEmpty").hidden = true;
+  LK.groups.forEach((g, gi) => {
+    const variant = g.kind === "stack"
+      ? `lote${g.qty_median ? ` (~${fmt(g.qty_median)} un)` : ""}`
+      : [(RAR[g.tier]||[""])[0], g.up_level ? `+${g.up_level}` : "",
+         g.ftier ? `⚒T${g.ftier}` : ""].filter(Boolean).join(" ") || "-";
+    const priceCol = g.kind === "stack"
+      ? `${(+g.unit_median).toPrecision(3)}/un <span class="mut">· ${fmt(g.price_median)} o lote (${fmt(g.price_min)}-${fmt(g.price_max)})</span>`
+      : `${fmt(g.price_median)} <span class="mut">· ${fmt(g.price_p25)}-${fmt(g.price_p75)} · ${fmt(g.price_min)}-${fmt(g.price_max)}</span>`;
+    const SELL = {good:["✅ bom momento","pos"], mid:["➖ ok","mut"],
+      hold:["⏳ segurar","neg"], slow:["🐌 pouca procura","warn-t"],
+      floor:["≈25 no piso","mut"]};
+    const sv = SELL[g.sell_state] || SELL.mid;
+    const tr = document.createElement("tr");
+    tr.className = g.sell_state === "good" ? "t-excelente" : g.sell_state === "hold" ? "t-boa" : "";
+    tr.innerHTML = `
+      <td>${itemName(g.name, "l"+gi, g.kind==="gear" ? {rarity:g.tier, item_class:g.item_class, req_vocs:g.req_vocs, req_level:g.req_level, attrs_text:null, item_stats:g.item_stats} : null)} ${copyBtn(g.name)}
+        <div class="mut" style="font-size:11px">${variant}</div></td>
+      <td><span class="${sv[1]}" style="font-weight:600;font-size:12px">${sv[0]}</span>${trendLine(g.trend)}</td>
+      <td class="num">${g.n} <span class="mut">${(+g.per_day).toFixed(1)}/d</span></td>
+      <td class="num">${priceCol}</td>
+      <td class="num">${Number.isInteger(g.bids_median) ? g.bids_median : (+g.bids_median).toFixed(1)}</td>
+      <td class="num" title="${g.active?`${g.active} ativos, ${g.closing_6h} fecham em ~6h · ${g.supply_pressure}x mais vendedores que compradores`:''}">${g.active ? `
+        <span class="${g.supply_pressure<=1?'pos':g.supply_pressure<=2?'warn-t':'neg'}">${fmt(g.active)}</span>
+        <div class="mut" style="font-size:10px">${g.supply_pressure}x demanda</div>`
+        : `<span class="pos">0 <span class="mut" style="font-size:10px">livre</span></span>`}</td>
+      <td class="num" title="${g.start_note}">${fmt(g.suggested_start)}
+        <div class="mut" style="font-size:10px">${g.bids_median>=2 ? "mercado bida" : "vende no inicial"}</div></td>
+      <td class="num pos">${fmt(g.net_at_median)}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+function renderRange(){
+  const f = $("#fromD").value, t = $("#toD").value;
+  if(!f || !t || !STATE){ $("#rangeResult").textContent = ""; return; }
+  const a = new Date(f).getTime(), b = new Date(t).getTime() + 86400000;
+  let sum = 0, n = 0;
+  for(const p of STATE.positions)
+    if(p.state==="sold" && p.sold_at>=a && p.sold_at<b){ sum += p.net; n++; }
+  $("#rangeResult").innerHTML =
+    `<span class="${cls(sum)}"><strong>${sign(sum)}</strong></span> <span class="mut">(${n} venda(s))</span>`;
+}
+
+// ---- events ----
+async function copyName(text, btn){
+  try{ await navigator.clipboard.writeText(text); }
+  catch(_){
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand("copy"); }catch(e){}
+    ta.remove();
+  }
+  const old = btn.textContent;
+  btn.textContent = "✓"; btn.classList.add("ok");
+  setTimeout(()=>{ btn.textContent = old; btn.classList.remove("ok"); }, 1000);
+}
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("button"); if(!b) return;
+  try{
+    if(b.dataset.copy !== undefined){ copyName(b.dataset.copy, b); return; }
+    if(b.dataset.bid){
+      const max = prompt("Seu lance máximo em coins:", b.dataset.max);
+      if(max===null) return;
+      await api("POST","/api/position",{auction_id:+b.dataset.bid, max_bid:+max});
+    }
+    else if(b.dataset.dismiss)
+      await api("POST",`/api/opportunity/${b.dataset.dismiss}/dismiss`);
+    else if(b.dataset.won){
+      const price = prompt("Preço que você pagou (coins):", b.dataset.price||"");
+      if(price===null) return;
+      await api("PATCH",`/api/position/${b.dataset.won}`,{action:"won", buy_price:+price});
+    }
+    else if(b.dataset.lost)
+      await api("PATCH",`/api/position/${b.dataset.lost}`,{action:"lost"});
+    else if(b.dataset.raise){
+      const p = (STATE.positions||[]).find(x => x.id == b.dataset.raise) || {};
+      const cur = p.last_auction_price || 0, mx = p.max_bid || 0;
+      const ref = (p.sell_max!=null || p.use_max!=null)
+        ? `\nRevender até ${fmt(p.sell_max)} · usar até ${fmt(p.use_max)}` : "";
+      const nv = prompt(
+        `Leilão está em ${cur} · seu lance máximo é ${mx}.${ref}\nNovo lance máximo:`,
+        Math.max(cur, mx) + 5);
+      if(nv===null || !+nv) return;
+      if(+nv <= cur && !confirm(`${nv} está no/abaixo do preço atual (${cur}) - você continuaria superado. Confirmar?`)) return;
+      if(p.use_max!=null && +nv > p.use_max && !confirm(`${nv} passa do "usar até" (${fmt(p.use_max)}) - você estaria pagando acima do mercado. Confirmar?`)) return;
+      await api("PATCH",`/api/position/${b.dataset.raise}`,{action:"edit", max_bid:+nv});
+    }
+    else if(b.dataset.used){
+      if(!confirm("Marcar como usado? (sai do estoque, sem venda)")) return;
+      await api("PATCH",`/api/position/${b.dataset.used}`,{action:"used"});
+    }
+    else if(b.dataset.sold){
+      const price = prompt("Por quanto vendeu (coins):");
+      if(!price) return;
+      await api("PATCH",`/api/position/${b.dataset.sold}`,{action:"sold", sell_price:+price});
+    }
+    else if(b.dataset.reopen)
+      await api("PATCH",`/api/position/${b.dataset.reopen}`,{action:"reopen"});
+    else if(b.dataset.del){
+      if(!confirm("Remover esta posição?")) return;
+      await api("DELETE",`/api/position/${b.dataset.del}`);
+    }
+    else if(b.dataset.mode)
+      await api("POST","/api/settings",{filter_mode:b.dataset.mode});
+    else if(b.id === "histPrev"){ histPage--; loadHistory(); return; }
+    else if(b.id === "histNext"){ histPage++; loadHistory(); return; }
+    else if(b.dataset.pg){
+      const [id, p] = b.dataset.pg.split(":");
+      if(id === "open") openPage = Math.max(0, +p);
+      else if(id === "done") donePage = Math.max(0, +p);
+      else if(id === "stock") stockPage = Math.max(0, +p);
+      else if(id === "cothers") cothersPage = Math.max(0, +p);
+      render(); return;
+    }
+    else if(b.dataset.lkdays){ lkDays = +b.dataset.lkdays; doLookup(); return; }
+    else if(b.id === "lkBtn"){ doLookup(); return; }
+    else if(b.id === "wSearchBtn"){ watchSearch(); return; }
+    else if(b.dataset.bchip !== undefined){ b.classList.toggle("off"); return; }
+    else if(b.dataset.bdelattr){ bAttrs.delete(+b.dataset.bdelattr); renderAttrChips(); return; }
+    else if(b.id === "bAdd"){ addBounty(); return; }
+    else if(b.dataset.delbounty){
+      if(!confirm("Parar de acompanhar este item?")) return;
+      await api("DELETE",`/api/bounty/${b.dataset.delbounty}`); load(); return;
+    }
+    else if(b.dataset.bpause){
+      await api("PATCH",`/api/bounty/${b.dataset.bpause}`,{active:+b.dataset.active});
+      load(); return;
+    }
+    else if(b.id === "wAddId"){
+      const id = +$("#wId").value;
+      if(!id){ $("#wNote").textContent = "informe o id"; return; }
+      try{ await api("POST","/api/watch",{auction_id:id}); $("#wId").value=""; $("#wNote").textContent=""; load(); }
+      catch(e){ $("#wNote").textContent = "erro: "+e.message; }
+      return;
+    }
+    else if(b.dataset.addwatch){
+      try{ await api("POST","/api/watch",{auction_id:+b.dataset.addwatch}); b.textContent="✓ acompanhando"; b.disabled=true; load(); }
+      catch(e){ alert("erro: "+e.message); }
+      return;
+    }
+    else if(b.dataset.delwatch){
+      await api("DELETE",`/api/watch/${b.dataset.delwatch}`); load(); return;
+    }
+    else if(b.dataset.delchar){
+      if(!confirm("Remover este personagem?")) return;
+      await api("DELETE",`/api/character/${b.dataset.delchar}`);
+    }
+    else if(b.id === "cAdd"){
+      const name = $("#cName").value.trim(), lv = +$("#cLevel").value;
+      if(!name || !lv){ alert("nome e level"); return; }
+      await api("POST","/api/character",{name, vocation:$("#cVoc").value, level:lv});
+      $("#cName").value = $("#cLevel").value = "";
+    }
+    else return;
+    load();
+  }catch(err){ alert("erro: "+err.message); }
+});
+
+document.addEventListener("click", async e => {
+  const t = e.target.closest("[data-toggle]"); if(!t) return;
+  const c = (STATE.characters||[]).find(x => x.id == t.dataset.toggle);
+  if(c) try{
+    await api("PATCH",`/api/character/${c.id}`,{active: c.active ? 0 : 1});
+    load();
+  }catch(err){ alert("erro: "+err.message); }
+});
+
+$("#scanBtn").onclick = async () => {
+  $("#scanBtn").textContent = "varrendo...";
+  try{ await api("POST","/api/scan"); }catch(e){}
+  setTimeout(()=>{ $("#scanBtn").textContent = "Varrer agora"; load(); }, 4000);
+};
+$("#saveCap").onclick = async () => {
+  await api("POST","/api/settings",{initial_capital:+$("#initCap").value});
+  load();
+};
+$("#feeChk").onchange = async () => {
+  await api("POST","/api/settings",{deduct_listing_fee:$("#feeChk").checked});
+  load();
+};
+$("#fromD").onchange = $("#toD").onchange = renderRange;
+$("#lkQ").addEventListener("keydown", e => { if(e.key === "Enter") doLookup(); });
+
+async function watchSearch(){
+  const q = $("#wSearch").value.trim();
+  if(q.length < 2){ $("#wNote").textContent = "digite ao menos 2 letras"; return; }
+  $("#wNote").textContent = "buscando...";
+  try{
+    const r = await api("GET", "/api/watch/search?q=" + encodeURIComponent(q));
+    $("#wNote").textContent = "";
+    renderWatchResults(r);
+  }catch(e){ $("#wNote").textContent = "erro: " + e.message; }
+}
+$("#wSearch").addEventListener("keydown", e => { if(e.key === "Enter") watchSearch(); });
+
+function syncBell(){
+  const ok = ("Notification" in window) && Notification.permission === "granted";
+  $("#bellBtn").style.opacity = ok ? 1 : .5;
+  $("#bellBtn").title = ok ? "avisos no desktop ativos"
+    : "ativar avisos no desktop quando um lance for coberto";
+}
+$("#bellBtn").onclick = async () => {
+  if(!("Notification" in window)) return alert("este navegador não suporta avisos");
+  if(Notification.permission === "default") await Notification.requestPermission();
+  syncBell();
+};
+syncBell();
+
+// tick countdowns every second without refetching
+setInterval(() => {
+  const now = Date.now();
+  document.querySelectorAll("[data-cd]").forEach(td => {
+    const ends = +td.dataset.cd; if(!ends) return;
+    td.textContent = secsTxt(Math.round((ends - now)/1000));
+  });
+  // liga/desliga o pisca-verde no último minuto de oportunidades de alto tier
+  document.querySelectorAll("#gearTable tbody tr[data-flash-gap]").forEach(tr => {
+    const secs = (+tr.dataset.flashEnds - now)/1000;
+    const on = +tr.dataset.flashGap >= FLASH.gap && secs > 0 && secs <= FLASH.secs;
+    tr.classList.toggle("flash-row", on);
+  });
+}, 1000);
+
+setInterval(load, 10000);
+setInterval(loadHistory, 60000);
+load();
+loadHistory();
+</script>
+</body>
+</html>

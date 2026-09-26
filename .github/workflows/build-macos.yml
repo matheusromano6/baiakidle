@@ -54,6 +54,17 @@ jobs:
           "
           cp icon.ico dist/icon.ico
 
+      - name: Copiar o codigo do market/ pro lado do app
+        # so' o CODIGO (server.py, analyze.py etc) - nunca banco/backups/
+        # perfil do Chrome/config pessoal (mesma lista de exclusao de
+        # make_share_zip.py). Cada instalacao comeca com um banco vazio.
+        run: |
+          mkdir -p dist/market
+          rsync -a --exclude 'market.db*' --exclude 'backups' --exclude 'chrome_profile' \
+            --exclude 'config.json' --exclude '__pycache__' \
+            --exclude 'handoff-baiak-market-alert.pdf' \
+            market/ dist/market/
+
       - uses: actions/upload-artifact@v4
         with:
           name: BaiakIdleBot-macos-arm64

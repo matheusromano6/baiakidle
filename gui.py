@@ -384,9 +384,16 @@ class BotGUI:
         """Sobe o servidor do painel de mercado (market/server.py) junto do
         bot, sem abrir navegador nenhum sozinho - so guarda a URL pro botao
         'Acompanhar Mercado' abrir quando o usuario quiser. So faz algo se a
-        pasta 'market' existir (ver MARKET_DIR) - builds compartilhadas
-        (zip de outros usuarios) nao tem essa pasta, entao o recurso so
-        aparece pra quem tem o market configurado.
+        pasta 'market' existir (ver MARKET_DIR) - o codigo agora vai junto
+        no build compartilhado, entao qualquer instalacao tem essa pasta,
+        cada uma com seu proprio banco de dados vazio (nunca o pessoal).
+
+        No Mac instalado num lugar sem permissao de escrita (ex:
+        /Applications), o banco/perfil do Chrome dedicado do market NAO
+        podem ficar do lado do proprio server.py (mesmo problema ja
+        corrigido pro resto do bot - ver bot.data_dir()) - redireciona pra
+        uma pasta gravavel ANTES de importar o server, via variavel de
+        ambiente (BAIAK_DB/BAIAK_MARKET_PROFILE_DIR).
 
         So' UMA instancia do bot deve rodar o poller de mercado de verdade
         (ver 'Nova Janela' - com 2 janelas abertas, so a 1a consegue). Se a
@@ -395,6 +402,15 @@ class BotGUI:
         pe na 1a janela, e segue sem tentar rodar um 2o poller."""
         if not os.path.isdir(MARKET_DIR):
             return
+        if getattr(sys, "frozen", False) and sys.platform == "darwin":
+            # mesma condicao exata de bot.data_dir() - so redireciona no caso
+            # que realmente precisa (app empacotado no Mac); no Windows e em
+            # modo dev, MARKET_DIR ja e' gravavel (dist/ do usuario, ou a
+            # arvore de codigo-fonte), nao mexe em nada.
+            market_data_dir = os.path.join(bot.data_dir(), "market")
+            os.makedirs(market_data_dir, exist_ok=True)
+            os.environ["BAIAK_DB"] = os.path.join(market_data_dir, "market.db")
+            os.environ["BAIAK_MARKET_PROFILE_DIR"] = os.path.join(market_data_dir, "chrome_profile")
         try:
             import server as market_server
         except Exception as error:
