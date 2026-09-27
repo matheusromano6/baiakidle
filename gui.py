@@ -30,6 +30,15 @@ LOG_DIR = os.path.join(bot.data_dir(), "logs")
 MARKET_DIR = os.path.join(bot.resource_dir(), "market")
 if not os.path.isdir(MARKET_DIR):
     MARKET_DIR = os.path.join(bot.resource_dir(), "..", "market")
+if not os.path.isdir(MARKET_DIR):
+    # empacotado com --add-data (ver build): viaja DENTRO do proprio
+    # executavel/app, nao depende do usuario manter a pasta 'market' do
+    # lado dele - ex: arrastar so' o .app pra /Applications no Mac sem
+    # levar 'market' junto, causa real ja vista de "Painel de mercado
+    # indisponivel" mesmo com o build certo.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        MARKET_DIR = os.path.join(meipass, "market")
 if os.path.isdir(MARKET_DIR) and MARKET_DIR not in sys.path:
     sys.path.append(MARKET_DIR)
 
@@ -401,6 +410,13 @@ class BotGUI:
         so aponta o botao 'Acompanhar Mercado' pro servidor que ja esta de
         pe na 1a janela, e segue sem tentar rodar um 2o poller."""
         if not os.path.isdir(MARKET_DIR):
+            # antes saia calado daqui - "Painel de mercado indisponivel" no
+            # botao sem NADA no log pra explicar o motivo. A pasta 'market'
+            # precisa estar fisicamente do lado do executavel/app (nao e'
+            # recriada sozinha, tem codigo de verdade dentro) - se o usuario
+            # moveu so' o .app (ex: arrastou pra /Applications sem levar a
+            # pasta 'market' junto), e' exatamente isso que falta.
+            self.log(f"Painel de mercado nao iniciou: pasta 'market' nao encontrada (esperada em '{MARKET_DIR}').")
             return
         if getattr(sys, "frozen", False) and sys.platform == "darwin":
             # mesma condicao exata de bot.data_dir() - so redireciona no caso

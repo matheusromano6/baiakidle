@@ -36,9 +36,20 @@ jobs:
         # do Windows); o Mac espera .icns. Cosmetico, nao funcional - melhor
         # deixar sem por enquanto do que arriscar quebrar o build por causa
         # disso numa primeira rodada que ninguem testou ainda.
+        #
+        # '--add-data market:market' embute o CODIGO do market/ DENTRO do
+        # proprio .app (extraido em tempo de execucao via sys._MEIPASS, ve
+        # gui.py) - nao depende mais do usuario manter a pasta 'market' do
+        # lado do .app (ex: arrastar so' o .app pra /Applications sem levar
+        # 'market' junto - causa real ja vista de 'Painel de mercado
+        # indisponivel'). Seguro copiar direto do checkout aqui porque o
+        # git nunca tem os arquivos pessoais (market.db/backups/etc sao
+        # gitignored) - ao contrario de uma build local, que precisa
+        # filtrar antes.
         run: |
           pyinstaller --onefile --windowed --name BaiakIdleBot \
             --add-data "${{ steps.driver.outputs.path }}:playwright/driver" \
+            --add-data "market:market" \
             gui.py
 
       - name: Copiar config padrao pro lado do app
