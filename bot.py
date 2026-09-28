@@ -387,11 +387,15 @@ def apply_update_windows(asset_url, log):
     current_exe = sys.executable
     pid = os.getpid()
     bat_path = os.path.join(tmp_dir, "apply_update.bat")
+    # merge (nao apaga/substitui a pasta inteira): 'new_market' so' tem
+    # codigo (sem banco/config/chrome_profile pessoal, ve MARKET_EXCLUDE_NAMES
+    # em make_share_zip.py), entao um xcopy por cima preserva os dados reais
+    # do usuario que ja estao em 'current_market'.
     market_swap = ""
     if os.path.isdir(new_market):
         market_swap = (
-            f'if exist "{current_market}" rmdir /S /Q "{current_market}"\n'
-            f'move /Y "{new_market}" "{current_market}" >NUL\n'
+            f'if not exist "{current_market}" mkdir "{current_market}"\n'
+            f'xcopy /Y /E /I /Q "{new_market}\\*" "{current_market}\\" >NUL\n'
         )
     bat_content = (
         "@echo off\n"
