@@ -2,16 +2,19 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.12.7"
+VERSION = "4.13.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -255,6 +258,238 @@ def data_dir():
         os.makedirs(base, exist_ok=True)
         return base
     return resource_dir()
+
+
+# ---------------------------------------------------------------------------
+# Auto-update: consulta o GitHub Releases do proprio repo (API publica, sem
+# precisar de token) pela versao mais recente publicada, baixa o build certo
+# pro sistema operacional de quem esta rodando e troca o proprio executavel/
+# app sozinho. So' faz sentido rodando congelado (.exe/.app) - em modo dev
+# ('python gui.py') so' teria o codigo-fonte pra atualizar, nao um binario.
+UPDATE_REPO = "matheusromano6/baiakidle"
+UPDATE_API_URL = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+# nomes FIXOS dos assets em cada release (nao mudam de versao pra versao) -
+# e' o que permite achar o build certo sem precisar saber o numero da
+# versao de antemao.
+UPDATE_ASSET_NAMES = {
+    "win32": "BaiakIdleBot-windows.zip",
+    "darwin": "BaiakIdleBot-macos-arm64.zip",
+}
+
+
+def _parse_version(text):
+    """'4.12.7' ou 'v4.12.7' -> (4, 12, 7), pra comparar numericamente (nao
+    como texto - senao '4.9.10' > '4.10.0' incorretamente, string vem antes
+    por causa do '9' > '1' no 2o digito)."""
+    text = (text or "").strip().lstrip("vV")
+    parts = []
+    for piece in text.split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            break
+    return tuple(parts)
+
+
+def check_for_update(log=print):
+    """Consulta a release mais recente no GitHub. Retorna
+    {'version', 'asset_url', 'asset_name'} se houver uma versao MAIOR que a
+    atual disponivel pro sistema operacional de quem esta chamando, ou None
+    (ja esta na ultima, ainda nao tem release nenhuma, SO nao tem build pra
+    esse SO, ou erro de rede - nunca trava o bot por causa disso, so' avisa
+    no log e segue sem atualizar)."""
+    try:
+        request = urllib.request.Request(
+            UPDATE_API_URL,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "BaiakIdleBot"},
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            data = json.load(response)
+    except Exception as error:
+        log(f"  Nao consegui checar atualizacoes: {error}")
+        return None
+
+    latest_tag = data.get("tag_name") or ""
+    latest_version = _parse_version(latest_tag)
+    if not latest_version or latest_version <= _parse_version(VERSION):
+        return None
+
+    asset_name = UPDATE_ASSET_NAMES.get(sys.platform)
+    if asset_name is None:
+        return None  # SO sem build (ex: Linux) - nada a fazer
+
+    asset_url = None
+    for asset in data.get("assets", []) or []:
+        if asset.get("name") == asset_name:
+            asset_url = asset.get("browser_download_url")
+            break
+    if not asset_url:
+        return None  # release existe mas ainda nao subiu o build desse SO
+
+    return {
+        "version": latest_tag.lstrip("vV"),
+        "asset_url": asset_url,
+        "asset_name": asset_name,
+    }
+
+
+def _download_update_zip(asset_url, log):
+    """Baixa o zip da atualizacao pra uma pasta temporaria e confere que e'
+    um zip valido antes de mexer em qualquer coisa. Retorna o caminho do
+    zip baixado, ou None se falhar (nada foi trocado ainda nesse ponto)."""
+    tmp_dir = tempfile.mkdtemp(prefix="baiakidle_update_")
+    zip_path = os.path.join(tmp_dir, "update.zip")
+    try:
+        urllib.request.urlretrieve(asset_url, zip_path)
+    except Exception as error:
+        log(f"  Erro ao baixar a atualizacao: {error}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+    if not zipfile.is_zipfile(zip_path):
+        log("  O arquivo baixado nao e' um zip valido - atualizacao cancelada.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+    return zip_path
+
+
+def apply_update_windows(asset_url, log):
+    """Baixa e aplica a atualizacao no Windows. Nao da pra sobrescrever o
+    .exe rodando (fica travado pelo proprio processo) - gera um .bat que
+    espera ESSE processo (pelo PID) terminar, so' ENTAO troca o arquivo
+    (guardando o antigo como '.bak', apagado so' depois da troca confirmar)
+    e reabre o bot. Quem chama precisa fechar o bot logo em seguida pra
+    liberar o .exe pro .bat trocar."""
+    zip_path = _download_update_zip(asset_url, log)
+    if zip_path is None:
+        return False
+    tmp_dir = os.path.dirname(zip_path)
+
+    extract_dir = os.path.join(tmp_dir, "extracted")
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(extract_dir)
+
+    new_exe = None
+    for name in os.listdir(extract_dir):
+        if name.lower().endswith(".exe"):
+            new_exe = os.path.join(extract_dir, name)
+            break
+    if new_exe is None:
+        log("  Nao achei o .exe dentro do zip baixado - atualizacao cancelada.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return False
+
+    # atualiza tambem a copia solta de 'market/' do lado do exe, se existir
+    # (a embutida no exe novo ja cobre o essencial - isso e' so' consistencia,
+    # nao trava a atualizacao se der errado).
+    new_market = os.path.join(extract_dir, "market")
+    current_market = os.path.join(resource_dir(), "market")
+
+    current_exe = sys.executable
+    pid = os.getpid()
+    bat_path = os.path.join(tmp_dir, "apply_update.bat")
+    market_swap = ""
+    if os.path.isdir(new_market):
+        market_swap = (
+            f'if exist "{current_market}" rmdir /S /Q "{current_market}"\n'
+            f'move /Y "{new_market}" "{current_market}" >NUL\n'
+        )
+    bat_content = (
+        "@echo off\n"
+        ":waitloop\n"
+        f'tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL\n'
+        "if not errorlevel 1 (\n"
+        "    timeout /t 1 /nobreak >NUL\n"
+        "    goto waitloop\n"
+        ")\n"
+        f'move /Y "{current_exe}" "{current_exe}.bak" >NUL\n'
+        f'move /Y "{new_exe}" "{current_exe}" >NUL\n'
+        f"{market_swap}"
+        f'start "" "{current_exe}"\n'
+        f'del "{current_exe}.bak"\n'
+    )
+    with open(bat_path, "w", encoding="utf-8") as file:
+        file.write(bat_content)
+
+    base_flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", bat_path],
+            creationflags=base_flags | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+            close_fds=True,
+        )
+    except OSError:
+        subprocess.Popen(
+            ["cmd", "/c", bat_path],
+            creationflags=base_flags,
+            close_fds=True,
+        )
+    log("  Atualizacao baixada - o bot vai fechar e reabrir sozinho na versao nova.")
+    return True
+
+
+def apply_update_mac(asset_url, log):
+    """Baixa e aplica a atualizacao no Mac. Mesma ideia que a versao
+    Windows, mas trocando um pacote '.app' inteiro (uma pasta) em vez de um
+    unico arquivo - usa um script shell em vez de .bat.
+
+    NAO TESTADO num Mac de verdade ainda - se falhar em algum passo, o
+    '.app' antigo continua intacto (so' e' apagado depois da troca
+    confirmar), e o botao de atualizar continua disponivel pra tentar nas
+    proxima vez ou baixar manualmente pela pagina de releases."""
+    zip_path = _download_update_zip(asset_url, log)
+    if zip_path is None:
+        return False
+    tmp_dir = os.path.dirname(zip_path)
+
+    extract_dir = os.path.join(tmp_dir, "extracted")
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(extract_dir)
+
+    new_app = None
+    for name in os.listdir(extract_dir):
+        if name.endswith(".app"):
+            new_app = os.path.join(extract_dir, name)
+            break
+    if new_app is None:
+        log("  Nao achei o .app dentro do zip baixado - atualizacao cancelada.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return False
+
+    # sys.executable de um app empacotado fica em Algo.app/Contents/MacOS/Algo
+    exe_dir = os.path.dirname(sys.executable)
+    current_app = os.path.dirname(os.path.dirname(exe_dir))  # MacOS -> Contents -> Algo.app
+    pid = os.getpid()
+
+    sh_path = os.path.join(tmp_dir, "apply_update.sh")
+    sh_content = (
+        "#!/bin/sh\n"
+        f"while kill -0 {pid} 2>/dev/null; do\n"
+        "    sleep 1\n"
+        "done\n"
+        f'mv "{current_app}" "{current_app}.bak"\n'
+        f'mv "{new_app}" "{current_app}"\n'
+        f'xattr -cr "{current_app}" 2>/dev/null\n'
+        f'rm -rf "{current_app}.bak"\n'
+        f'open "{current_app}"\n'
+    )
+    with open(sh_path, "w", encoding="utf-8") as file:
+        file.write(sh_content)
+    os.chmod(sh_path, 0o755)
+
+    subprocess.Popen(["/bin/sh", sh_path], start_new_session=True)
+    log("  Atualizacao baixada - o bot vai fechar e reabrir sozinho na versao nova.")
+    return True
+
+
+def apply_update(asset_url, log):
+    """Escolhe a funcao certa pro sistema operacional atual. Quem chama deve
+    fechar o bot logo depois de um retorno True (o script auxiliar so'
+    continua a troca quando esse processo terminar de verdade)."""
+    if sys.platform == "win32":
+        return apply_update_windows(asset_url, log)
+    if sys.platform == "darwin":
+        return apply_update_mac(asset_url, log)
+    return False
 
 
 def profile_dir():

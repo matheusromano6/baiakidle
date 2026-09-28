@@ -103,9 +103,15 @@ class BotGUI:
         self.build_routines_panel()
         self.build_log_panel()
 
+        self.update_info = None
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll_log_queue)
         self.root.after(500, self.poll_status)
+        # espera a tela terminar de montar antes de sair checando a rede -
+        # so' roda de verdade quando empacotado (frozen), sem release
+        # nenhuma publicada ainda 'check_for_update' so' loga e volta None,
+        # sem travar nada.
+        self.root.after(2000, self.check_for_update_async)
 
     # ---------- layout ----------
 
@@ -121,6 +127,20 @@ class BotGUI:
         ctk.CTkLabel(
             header, text=f"v{bot.VERSION}", font=theme.FONT_BODY, text_color=theme.MUTED
         ).pack(side="left")
+
+        # botao de atualizacao - criado aqui mas SO' aparece (pack) quando
+        # 'check_for_update_async' realmente achar uma versao nova (ve
+        # __init__). Fica escondido o resto do tempo, sem ocupar espaco.
+        self.update_button = ctk.CTkButton(
+            header,
+            text="Atualizar",
+            width=110,
+            command=self.start_update,
+            fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER,
+            text_color="#04140a",
+            font=theme.FONT_BODY,
+        )
 
         # Seletor de navegador/conta ativo - decide QUAL routines.json/settings.json
         # esta em uso (ver bot.BROWSER_PROFILES). Fica separado do botao 'Abrir
@@ -347,6 +367,88 @@ class BotGUI:
             self.log(f"Abrindo nova janela no {bot.BROWSER_PROFILES[other_profile]['label']}...")
         except Exception as error:
             self.log(f"Erro ao abrir nova janela: {error}")
+
+    def check_for_update_async(self):
+        """Checa (numa thread, sem travar a tela) se ha uma versao mais nova
+        publicada no GitHub Releases. So' roda de verdade quando empacotado
+        (frozen) - em modo dev ('python gui.py') nao ha executavel/app pra
+        substituir, entao nem tenta."""
+        if not getattr(sys, "frozen", False):
+            return
+
+        def worker():
+            info = bot.check_for_update(log=self.log)
+            self.root.after(0, lambda: self._on_update_check_result(info))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_check_result(self, info):
+        if not info:
+            return
+        self.update_info = info
+        self.update_button.configure(text=f"Atualizar p/ v{info['version']}")
+        self.update_button.pack(side="left", padx=(12, 0))
+        self.log(f"Nova versao disponivel: v{info['version']} (atual: v{bot.VERSION}).")
+
+    def start_update(self):
+        """Confirma com o usuario e dispara o download/troca (bot.apply_update)
+        numa thread - baixar a atualizacao nao deve travar a tela. Se der
+        certo, fecha o bot logo em seguida pra liberar o executavel/app pro
+        script auxiliar completar a troca (ve apply_update_windows/mac)."""
+        info = self.update_info
+        if not info:
+            return
+        if self.thread is not None and self.thread.is_alive():
+            self.log("Pare o bot antes de atualizar.")
+            return
+
+        win = ctk.CTkToplevel(self.root)
+        win.title("Atualizar")
+        win.geometry("360x170")
+        win.configure(fg_color=theme.BG)
+        win.transient(self.root)
+        win.attributes("-topmost", True)
+
+        ctk.CTkLabel(
+            win,
+            text=(
+                f"Nova versao disponivel: v{info['version']}\n"
+                f"(atual: v{bot.VERSION})\n\n"
+                "O bot vai fechar e reabrir sozinho, ja atualizado."
+            ),
+            font=theme.FONT_BODY,
+            text_color=theme.TEXT,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(20, 10))
+
+        def confirm():
+            win.destroy()
+            self.update_button.configure(state="disabled", text="Atualizando...")
+            self.log(f"Baixando atualizacao (v{info['version']})...")
+
+            def worker():
+                ok = bot.apply_update(info["asset_url"], log=self.log)
+                self.root.after(0, lambda: self._on_update_applied(ok))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        ctk.CTkButton(
+            win, text="Atualizar agora", command=confirm, fg_color=theme.ACCENT,
+            hover_color=theme.ACCENT_HOVER, text_color="#04140a",
+        ).pack(padx=20, pady=(0, 8), fill="x")
+        ctk.CTkButton(
+            win, text="Agora nao", command=win.destroy, fg_color=theme.PANEL_ALT,
+            text_color=theme.TEXT, border_width=1, border_color=theme.BORDER,
+        ).pack(padx=20, fill="x")
+
+    def _on_update_applied(self, ok):
+        if not ok:
+            self.update_button.configure(state="normal", text=f"Atualizar p/ v{self.update_info['version']}")
+            self.log("Nao consegui aplicar a atualizacao - tente de novo mais tarde, ou baixe manualmente na pagina de releases.")
+            return
+        # o script auxiliar (.bat/.sh) so' continua a troca quando ESTE
+        # processo terminar de verdade - fecha a janela e sai.
+        self.on_close()
 
     def on_browser_selected(self, label):
         """Chamado pelo seletor de navegador no cabecalho."""
