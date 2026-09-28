@@ -103,15 +103,9 @@ class BotGUI:
         self.build_routines_panel()
         self.build_log_panel()
 
-        self.update_info = None
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll_log_queue)
         self.root.after(500, self.poll_status)
-        # espera a tela terminar de montar antes de sair checando a rede -
-        # so' roda de verdade quando empacotado (frozen), sem release
-        # nenhuma publicada ainda 'check_for_update' so' loga e volta None,
-        # sem travar nada.
-        self.root.after(2000, self.check_for_update_async)
 
     # ---------- layout ----------
 
@@ -128,9 +122,10 @@ class BotGUI:
             header, text=f"v{bot.VERSION}", font=theme.FONT_BODY, text_color=theme.MUTED
         ).pack(side="left")
 
-        # botao de atualizacao - criado aqui mas SO' aparece (pack) quando
-        # 'check_for_update_async' realmente achar uma versao nova (ve
-        # __init__). Fica escondido o resto do tempo, sem ocupar espaco.
+        # botao de atualizacao - sempre visivel quando empacotado (frozen).
+        # Ao clicar, checa na hora se ha versao nova: se ja estiver
+        # atualizado, so' avisa no log; se nao, confirma e baixa. Em modo dev
+        # ('python gui.py') nem aparece - nao ha executavel/app pra trocar.
         self.update_button = ctk.CTkButton(
             header,
             text="Atualizar",
@@ -141,6 +136,8 @@ class BotGUI:
             text_color="#04140a",
             font=theme.FONT_BODY,
         )
+        if getattr(sys, "frozen", False):
+            self.update_button.pack(side="left", padx=(12, 0))
 
         # Seletor de navegador/conta ativo - decide QUAL routines.json/settings.json
         # esta em uso (ver bot.BROWSER_PROFILES). Fica separado do botao 'Abrir
@@ -368,40 +365,32 @@ class BotGUI:
         except Exception as error:
             self.log(f"Erro ao abrir nova janela: {error}")
 
-    def check_for_update_async(self):
-        """Checa (numa thread, sem travar a tela) se ha uma versao mais nova
-        publicada no GitHub Releases. So' roda de verdade quando empacotado
-        (frozen) - em modo dev ('python gui.py') nao ha executavel/app pra
-        substituir, entao nem tenta."""
-        if not getattr(sys, "frozen", False):
-            return
-
-        def worker():
-            info = bot.check_for_update(log=self.log)
-            self.root.after(0, lambda: self._on_update_check_result(info))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_update_check_result(self, info):
-        if not info:
-            return
-        self.update_info = info
-        self.update_button.configure(text=f"Atualizar p/ v{info['version']}")
-        self.update_button.pack(side="left", padx=(12, 0))
-        self.log(f"Nova versao disponivel: v{info['version']} (atual: v{bot.VERSION}).")
-
     def start_update(self):
-        """Confirma com o usuario e dispara o download/troca (bot.apply_update)
-        numa thread - baixar a atualizacao nao deve travar a tela. Se der
-        certo, fecha o bot logo em seguida pra liberar o executavel/app pro
-        script auxiliar completar a troca (ve apply_update_windows/mac)."""
-        info = self.update_info
-        if not info:
-            return
+        """Ao clicar: checa na hora (numa thread, sem travar a tela) se ha
+        versao nova. Se ja estiver atualizado, so' avisa no log. Se houver
+        uma nova, confirma com o usuario antes de baixar/trocar - troca em
+        si (bot.apply_update) nunca mexe em routines.json/settings.json,
+        entao a configuracao do usuario fica intacta."""
         if self.thread is not None and self.thread.is_alive():
             self.log("Pare o bot antes de atualizar.")
             return
 
+        self.update_button.configure(state="disabled", text="Verificando...")
+
+        def worker():
+            info = bot.check_for_update(log=self.log)
+            self.root.after(0, lambda: self._on_check_result(info))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_check_result(self, info):
+        self.update_button.configure(state="normal", text="Atualizar")
+        if not info:
+            self.log(f"Voce ja esta na versao mais recente (v{bot.VERSION}).")
+            return
+        self._show_update_confirm(info)
+
+    def _show_update_confirm(self, info):
         win = ctk.CTkToplevel(self.root)
         win.title("Atualizar")
         win.geometry("360x170")
@@ -443,7 +432,7 @@ class BotGUI:
 
     def _on_update_applied(self, ok):
         if not ok:
-            self.update_button.configure(state="normal", text=f"Atualizar p/ v{self.update_info['version']}")
+            self.update_button.configure(state="normal", text="Atualizar")
             self.log("Nao consegui aplicar a atualizacao - tente de novo mais tarde, ou baixe manualmente na pagina de releases.")
             return
         # o script auxiliar (.bat/.sh) so' continua a troca quando ESTE
