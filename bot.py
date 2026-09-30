@@ -391,25 +391,36 @@ def apply_update_windows(asset_url, log):
     # codigo (sem banco/config/chrome_profile pessoal, ve MARKET_EXCLUDE_NAMES
     # em make_share_zip.py), entao um xcopy por cima preserva os dados reais
     # do usuario que ja estao em 'current_market'.
+    update_log = os.path.join(tmp_dir, "update_log.txt")
     market_swap = ""
     if os.path.isdir(new_market):
         market_swap = (
             f'if not exist "{current_market}" mkdir "{current_market}"\n'
-            f'xcopy /Y /E /I /Q "{new_market}\\*" "{current_market}\\" >NUL\n'
+            f'xcopy /Y /E /I /Q "{new_market}\\*" "{current_market}\\" >> "{update_log}" 2>&1\n'
         )
+    # log proprio (diagnostico): se o processo desanexado morrer no meio do
+    # caminho por algum motivo externo (AV/EDR, job object restrito etc),
+    # esse arquivo mostra ate' onde ele chegou - sem ele, uma falha aqui e'
+    # completamente silenciosa (ve' historico: ja aconteceu em teste
+    # isolado e numa instalacao real).
     bat_content = (
         "@echo off\n"
+        f'echo %date% %time% iniciando, esperando PID {pid} fechar >> "{update_log}"\n'
         ":waitloop\n"
         f'tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL\n'
         "if not errorlevel 1 (\n"
         "    timeout /t 1 /nobreak >NUL\n"
         "    goto waitloop\n"
         ")\n"
-        f'move /Y "{current_exe}" "{current_exe}.bak" >NUL\n'
-        f'move /Y "{new_exe}" "{current_exe}" >NUL\n'
+        f'echo %date% %time% PID fechou, trocando exe >> "{update_log}"\n'
+        f'move /Y "{current_exe}" "{current_exe}.bak" >> "{update_log}" 2>&1\n'
+        f'move /Y "{new_exe}" "{current_exe}" >> "{update_log}" 2>&1\n'
+        f'echo %date% %time% exe trocado, atualizando market >> "{update_log}"\n'
         f"{market_swap}"
+        f'echo %date% %time% reabrindo o bot >> "{update_log}"\n'
         f'start "" "{current_exe}"\n'
         f'del "{current_exe}.bak"\n'
+        f'echo %date% %time% concluido >> "{update_log}"\n'
     )
     with open(bat_path, "w", encoding="utf-8") as file:
         file.write(bat_content)
@@ -428,6 +439,7 @@ def apply_update_windows(asset_url, log):
             close_fds=True,
         )
     log("  Atualizacao baixada - o bot vai fechar e reabrir sozinho na versao nova.")
+    log(f"  (se nao reabrir sozinho, o log da troca fica em: {update_log})")
     return True
 
 
