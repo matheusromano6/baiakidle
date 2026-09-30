@@ -3,7 +3,7 @@ python -m pip install pyinstaller
 
 for /f "delims=" %%i in ('python -c "import playwright, os; print(os.path.join(os.path.dirname(playwright.__file__), 'driver'))"') do set PLAYWRIGHT_DRIVER=%%i
 
-python -m PyInstaller --onefile --windowed --name BaiakIdleBot --icon icon.ico --add-data "%PLAYWRIGHT_DRIVER%;playwright\driver" gui.py
+python -m PyInstaller --onefile --windowed --name BaiakIdleBot --icon icon.ico --add-data "%PLAYWRIGHT_DRIVER%;playwright\driver" --hidden-import sqlite3 gui.py
 if errorlevel 1 (
     echo.
     echo ERRO: o build falhou. Veja as mensagens acima.
