@@ -14,7 +14,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.13.1"
+VERSION = "4.13.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -398,11 +398,21 @@ def apply_update_windows(asset_url, log):
             f'if not exist "{current_market}" mkdir "{current_market}"\n'
             f'xcopy /Y /E /I /Q "{new_market}\\*" "{current_market}\\" >> "{update_log}" 2>&1\n'
         )
-    # log proprio (diagnostico): se o processo desanexado morrer no meio do
-    # caminho por algum motivo externo (AV/EDR, job object restrito etc),
-    # esse arquivo mostra ate' onde ele chegou - sem ele, uma falha aqui e'
-    # completamente silenciosa (ve' historico: ja aconteceu em teste
-    # isolado e numa instalacao real).
+    # log proprio (diagnostico): se a troca falhar no meio do caminho por
+    # algum motivo, esse arquivo mostra ate' onde ela chegou - sem ele, uma
+    # falha aqui e' completamente silenciosa (ve' historico: ja aconteceu
+    # em teste isolado e numa instalacao real).
+    #
+    # o "tasklist | find" do loop de espera NAO e' confiavel quando o
+    # processo que roda o .bat e' criado totalmente sem console
+    # (subprocess.Popen com DETACHED_PROCESS) - confirmado em teste: o
+    # check da's vezes acerta, as vezes retorna errado (falso "ja fechou"
+    # ou trava pra sempre), aparentemente por causa de como tasklist/find
+    # se comportam sem um console de verdade por tras. Rodando o mesmo
+    # .bat via uma tarefa agendada (schtasks /create + /run, tarefa unica
+    # que se autodeleta no final) da' pra ele um contexto de processo
+    # normal - testado e confirmado funcionando de forma consistente.
+    task_name = f"BaiakIdleBotUpdate_{pid}"
     bat_content = (
         "@echo off\n"
         f'echo %date% %time% iniciando, esperando PID {pid} fechar >> "{update_log}"\n'
@@ -420,24 +430,25 @@ def apply_update_windows(asset_url, log):
         f'echo %date% %time% reabrindo o bot >> "{update_log}"\n'
         f'start "" "{current_exe}"\n'
         f'del "{current_exe}.bak"\n'
+        f'schtasks /delete /tn "{task_name}" /f >NUL 2>&1\n'
         f'echo %date% %time% concluido >> "{update_log}"\n'
     )
     with open(bat_path, "w", encoding="utf-8") as file:
         file.write(bat_content)
 
-    base_flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     try:
-        subprocess.Popen(
-            ["cmd", "/c", bat_path],
-            creationflags=base_flags | subprocess.CREATE_BREAKAWAY_FROM_JOB,
-            close_fds=True,
+        subprocess.run(
+            ["schtasks", "/create", "/tn", task_name, "/tr", bat_path,
+             "/sc", "once", "/st", "00:00", "/sd", "01/01/2050", "/f"],
+            creationflags=subprocess.CREATE_NO_WINDOW, check=True, capture_output=True,
         )
-    except OSError:
-        subprocess.Popen(
-            ["cmd", "/c", bat_path],
-            creationflags=base_flags,
-            close_fds=True,
+        subprocess.run(
+            ["schtasks", "/run", "/tn", task_name],
+            creationflags=subprocess.CREATE_NO_WINDOW, check=True, capture_output=True,
         )
+    except (subprocess.CalledProcessError, OSError) as error:
+        log(f"  Erro ao agendar a troca: {error}")
+        return False
     log("  Atualizacao baixada - o bot vai fechar e reabrir sozinho na versao nova.")
     log(f"  (se nao reabrir sozinho, o log da troca fica em: {update_log})")
     return True
