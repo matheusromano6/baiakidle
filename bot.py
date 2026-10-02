@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.14.1"
+VERSION = "4.14.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -347,14 +347,21 @@ def check_for_update(log=print):
     }
 
 
-def _download_update_zip(asset_url, log):
+def _download_update_zip(asset_url, log, progress=None):
     """Baixa o zip da atualizacao pra uma pasta temporaria e confere que e'
     um zip valido antes de mexer em qualquer coisa. Retorna o caminho do
-    zip baixado, ou None se falhar (nada foi trocado ainda nesse ponto)."""
+    zip baixado, ou None se falhar (nada foi trocado ainda nesse ponto).
+    'progress' (opcional) recebe a fracao 0..1 baixada - usado pela tela de
+    carregamento da GUI."""
     tmp_dir = tempfile.mkdtemp(prefix="baiakidle_update_")
     zip_path = os.path.join(tmp_dir, "update.zip")
+
+    def report(blocks, block_size, total_size):
+        if progress and total_size > 0:
+            progress(min(1.0, blocks * block_size / total_size))
+
     try:
-        urllib.request.urlretrieve(asset_url, zip_path)
+        urllib.request.urlretrieve(asset_url, zip_path, report)
     except Exception as error:
         log(f"  Erro ao baixar a atualizacao: {error}")
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -366,14 +373,14 @@ def _download_update_zip(asset_url, log):
     return zip_path
 
 
-def apply_update_windows(asset_url, log):
+def apply_update_windows(asset_url, log, progress=None):
     """Baixa e aplica a atualizacao no Windows. Nao da pra sobrescrever o
     .exe rodando (fica travado pelo proprio processo) - gera um .bat que
     espera ESSE processo (pelo PID) terminar, so' ENTAO troca o arquivo
     (guardando o antigo como '.bak', apagado so' depois da troca confirmar)
     e reabre o bot. Quem chama precisa fechar o bot logo em seguida pra
     liberar o .exe pro .bat trocar."""
-    zip_path = _download_update_zip(asset_url, log)
+    zip_path = _download_update_zip(asset_url, log, progress)
     if zip_path is None:
         return False
     tmp_dir = os.path.dirname(zip_path)
@@ -468,7 +475,7 @@ def apply_update_windows(asset_url, log):
     return True
 
 
-def apply_update_mac(asset_url, log):
+def apply_update_mac(asset_url, log, progress=None):
     """Baixa e aplica a atualizacao no Mac. Mesma ideia que a versao
     Windows, mas trocando um pacote '.app' inteiro (uma pasta) em vez de um
     unico arquivo - usa um script shell em vez de .bat.
@@ -477,7 +484,7 @@ def apply_update_mac(asset_url, log):
     '.app' antigo continua intacto (so' e' apagado depois da troca
     confirmar), e o botao de atualizar continua disponivel pra tentar nas
     proxima vez ou baixar manualmente pela pagina de releases."""
-    zip_path = _download_update_zip(asset_url, log)
+    zip_path = _download_update_zip(asset_url, log, progress)
     if zip_path is None:
         return False
     tmp_dir = os.path.dirname(zip_path)
@@ -522,14 +529,14 @@ def apply_update_mac(asset_url, log):
     return True
 
 
-def apply_update(asset_url, log):
+def apply_update(asset_url, log, progress=None):
     """Escolhe a funcao certa pro sistema operacional atual. Quem chama deve
     fechar o bot logo depois de um retorno True (o script auxiliar so'
     continua a troca quando esse processo terminar de verdade)."""
     if sys.platform == "win32":
-        return apply_update_windows(asset_url, log)
+        return apply_update_windows(asset_url, log, progress)
     if sys.platform == "darwin":
-        return apply_update_mac(asset_url, log)
+        return apply_update_mac(asset_url, log, progress)
     return False
 
 

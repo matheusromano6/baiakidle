@@ -413,14 +413,7 @@ class BotGUI:
 
         def confirm():
             win.destroy()
-            self.update_button.configure(state="disabled", text="Atualizando...")
-            self.log(f"Baixando atualizacao (v{info['version']})...")
-
-            def worker():
-                ok = bot.apply_update(info["asset_url"], log=self.log)
-                self.root.after(0, lambda: self._on_update_applied(ok))
-
-            threading.Thread(target=worker, daemon=True).start()
+            self._begin_update(info)
 
         ctk.CTkButton(
             win, text="Atualizar agora", command=confirm, fg_color=theme.ACCENT,
@@ -431,14 +424,86 @@ class BotGUI:
             text_color=theme.TEXT, border_width=1, border_color=theme.BORDER,
         ).pack(padx=20, fill="x")
 
+    def _begin_update(self, info):
+        """Baixa e instala a atualizacao numa thread, com uma tela de
+        carregamento por cima de TUDO (ve _show_update_overlay) - nada da
+        interface pode ser usado ate o bot fechar e reabrir atualizado."""
+        self.update_button.configure(state="disabled", text="Atualizando...")
+        self._show_update_overlay(info["version"])
+        self.log(f"Baixando atualizacao (v{info['version']})...")
+
+        last_percent = [-1]
+
+        def progress(fraction):
+            # o download avisa a cada bloquinho (milhares de vezes) - so' mexe
+            # na tela quando o percentual muda.
+            percent = int(fraction * 100)
+            if percent != last_percent[0]:
+                last_percent[0] = percent
+                self.root.after(0, lambda: self._set_update_progress(fraction))
+
+        def worker():
+            ok = bot.apply_update(info["asset_url"], log=self.log, progress=progress)
+            self.root.after(0, lambda: self._on_update_applied(ok))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_update_overlay(self, version):
+        overlay = ctk.CTkFrame(self.root, fg_color=theme.BG, corner_radius=0)
+        overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        overlay.lift()
+
+        card = ctk.CTkFrame(overlay, fg_color=theme.PANEL, corner_radius=12)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        ctk.CTkLabel(
+            card, text=f"ATUALIZANDO PARA v{version}", font=theme.FONT_TITLE, text_color=theme.ACCENT,
+        ).pack(padx=40, pady=(28, 10))
+        self.update_status_label = ctk.CTkLabel(
+            card, text="Baixando a atualizacao...", font=theme.FONT_BODY, text_color=theme.TEXT,
+        )
+        self.update_status_label.pack(padx=40, pady=(0, 12))
+        self.update_progress_bar = ctk.CTkProgressBar(
+            card, width=340, progress_color=theme.ACCENT, fg_color=theme.PANEL_ALT,
+        )
+        self.update_progress_bar.set(0)
+        self.update_progress_bar.pack(padx=40, pady=(0, 14))
+        ctk.CTkLabel(
+            card,
+            text="Nao feche nem use o bot agora - ele reabre sozinho\nquando a atualizacao terminar.",
+            font=theme.FONT_BODY, text_color=theme.MUTED, justify="center",
+        ).pack(padx=40, pady=(0, 28))
+
+        self.update_overlay = overlay
+        # grab: todo clique e tecla fica restrito a essa tela - nada por baixo reage.
+        overlay.grab_set()
+        overlay.focus_set()
+
+    def _set_update_progress(self, fraction):
+        if getattr(self, "update_overlay", None) is None:
+            return
+        self.update_progress_bar.set(fraction)
+        self.update_status_label.configure(text=f"Baixando a atualizacao... {int(fraction * 100)}%")
+
+    def _hide_update_overlay(self):
+        overlay = getattr(self, "update_overlay", None)
+        if overlay is None:
+            return
+        overlay.grab_release()
+        overlay.destroy()
+        self.update_overlay = None
+
     def _on_update_applied(self, ok):
         if not ok:
+            self._hide_update_overlay()
             self.update_button.configure(state="normal", text="Atualizar")
             self.log("Nao consegui aplicar a atualizacao - tente de novo mais tarde, ou baixe manualmente na pagina de releases.")
             return
         # o script auxiliar (.bat/.sh) so' continua a troca quando ESTE
-        # processo terminar de verdade - fecha a janela e sai.
-        self.on_close()
+        # processo terminar de verdade - mostra "reiniciando" por um instante
+        # (pra dar pra ler) e fecha a janela.
+        self.update_progress_bar.set(1)
+        self.update_status_label.configure(text="Instalando... reiniciando o bot.")
+        self.root.after(1500, self.on_close)
 
     def on_browser_selected(self, label):
         """Chamado pelo seletor de navegador no cabecalho."""
