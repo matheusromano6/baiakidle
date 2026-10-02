@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.14.2"
+VERSION = "4.14.3"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -232,6 +232,10 @@ DEFAULT_HUNT_MEMORY = {"name": ""}
 CAMPAIGN_MEMORY = {
     "target_hunt": None, "target_entry": None, "done": set(),
     "skip_until": {}, "travel_fails": 0, "training_sent": False, "missing_logged": set(),
+    # leitura completa so' quando algo muda: 'baseline_done' = contador de
+    # concluidos do Codex na ultima leitura completa; 'last_check'/'last_full'
+    # (monotonic) = ultima olhada no contador / ultima leitura completa.
+    "baseline_done": None, "last_check": 0.0, "last_full": 0.0,
 }
 
 
@@ -1666,6 +1670,13 @@ CODEX_ATTR_BY_LABEL = {label.lower(): value for value, label in CODEX_ATTRIBUTES
 CODEX_FILTER_LABELS = ("Entregáveis", "Esconder concluídos", "Esconder bloqueadas")
 ROMAN_LEVELS = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
 CAMPAIGN_SKIP_SECONDS = 15 * 60
+# Com o alvo definido, a campanha NAO fica mexendo no Codex a cada ciclo: de
+# CAMPAIGN_CHECK_SECONDS em CAMPAIGN_CHECK_SECONDS so' abre o Codex pra ler o
+# contador de concluidos (sem tocar em filtro nem campo); a leitura completa
+# (que desmarca filtros) so' roda se esse contador mudou, ou como rede de
+# seguranca a cada CAMPAIGN_FULL_RECHECK_SECONDS.
+CAMPAIGN_CHECK_SECONDS = 5 * 60
+CAMPAIGN_FULL_RECHECK_SECONDS = 20 * 60
 CAMPAIGN_MAX_TRAVEL_FAILS = 3
 
 CODEX_ENTRIES_JS = """() => Array.from(document.querySelectorAll('.cx-list .cx-entry')).map(e => {
@@ -1754,25 +1765,53 @@ def build_codex_entry(raw):
     }
 
 
-@contextlib.contextmanager
-def codex_hunts_view(page, log):
-    """Abre o Codex (Progressao > Codex, igual a rotina de entrega), vai pra
-    aba 'Hunts' e desliga os 3 filtros que escondem entradas (Entregaveis /
-    Esconder concluidos / Esconder bloqueadas) pra enxergar TUDO. Ao sair,
-    devolve o que mexeu (filtros, atributo, busca) e fecha o Codex - a rotina
-    de entrega depende desses filtros ligados e os reafirma a cada ciclo, mas
-    devolver aqui evita brigar com ela no meio."""
+def open_codex(page):
+    """Abre o Codex (Progressao > Codex, igual a rotina de entrega). Retorna
+    True se abriu agora, False se ja estava aberto."""
     if page.is_visible("#picker-modal"):
         # a janela de Hunts/Chefes aberta por cima intercepta os cliques - sem
         # fechar, nada do Codex abaixo responde (visto ao vivo).
         page.keyboard.press("Escape")
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
-    if not page.is_visible(".codex-side"):
-        page.click("#tab-progressao", timeout=3000)
-        page.click("#tab-codex", timeout=3000)
-        page.wait_for_selector(".codex-side", timeout=4000)
-        page.wait_for_timeout(500)
+    if page.is_visible(".codex-side"):
+        return False
+    page.click("#tab-progressao", timeout=3000)
+    page.click("#tab-codex", timeout=3000)
+    page.wait_for_selector(".codex-side", timeout=4000)
+    page.wait_for_timeout(500)
+    return True
+
+
+def read_codex_completed_count(page):
+    """Le o contador 'N / 690 concluidos' do Codex (soma de todas as
+    categorias) - abre e fecha o Codex como a rotina de entrega ja faz, SEM
+    mexer em filtro nem em campo. Sobe quando qualquer entrada completa
+    (inclusive por Auto Collect, que entrega sem o painel aberto). Retorna
+    None se nao conseguir ler."""
+    opened_here = open_codex(page)
+    try:
+        text = page.inner_text(".cx-title-score", timeout=2000) or ""
+    except Exception:
+        return None
+    finally:
+        if opened_here:
+            try:
+                page.click("#codex-modal-close", timeout=2000)
+            except Exception:
+                pass
+    match = re.match(r"\s*(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+@contextlib.contextmanager
+def codex_hunts_view(page, log):
+    """Abre o Codex, vai pra aba 'Hunts' e desliga os 3 filtros que escondem
+    entradas (Entregaveis / Esconder concluidos / Esconder bloqueadas) pra
+    enxergar TUDO. Ao sair, devolve o que mexeu (filtros, atributo, busca) e
+    fecha o Codex - a rotina de entrega depende desses filtros ligados e os
+    reafirma a cada ciclo, mas devolver aqui evita brigar com ela no meio."""
+    open_codex(page)
     unchecked = []
     previous_attr = ""
     try:
@@ -1889,6 +1928,7 @@ def reset_campaign_memory():
     CAMPAIGN_MEMORY.update({
         "target_hunt": None, "target_entry": None, "done": set(), "skip_until": {},
         "travel_fails": 0, "training_sent": False, "missing_logged": set(),
+        "baseline_done": None, "last_check": 0.0, "last_full": 0.0,
     })
 
 
@@ -2078,6 +2118,7 @@ def execute_dom_codex_campaign_step(page, step, log):
 
     # o alvo atual nao conseguiu chegar na hunt por varios ciclos seguidos
     # (hunt inexistente/bloqueada) - pula por um tempo em vez de ficar tentando
+    gave_up = False
     target_hunt = CAMPAIGN_MEMORY["target_hunt"]
     if target_hunt:
         try:
@@ -2096,8 +2137,32 @@ def execute_dom_codex_campaign_step(page, step, log):
                 CAMPAIGN_MEMORY["target_entry"] = None
                 CAMPAIGN_MEMORY["travel_fails"] = 0
                 pending = [i for i in pending if i["name"] != entry_name]
+                gave_up = True
 
-    target = pick_campaign_target(page, pending, log) if pending else None
+    count = None
+    if pending and CAMPAIGN_MEMORY["last_full"] and not gave_up:
+        # ja avaliou a fila antes: so' reavalia se algo mudou. Entre as
+        # olhadas nao toca no Codex (so' a conferencia de hunt, la' em cima).
+        since_full = now - CAMPAIGN_MEMORY["last_full"]
+        if since_full < CAMPAIGN_FULL_RECHECK_SECONDS:
+            if now - CAMPAIGN_MEMORY["last_check"] < CAMPAIGN_CHECK_SECONDS:
+                return True
+            count = read_codex_completed_count(page)
+            CAMPAIGN_MEMORY["last_check"] = now
+            if count is not None and count == CAMPAIGN_MEMORY["baseline_done"]:
+                return True  # nada novo concluido desde a ultima leitura completa
+            if count is not None:
+                log(f"  Campanha de Codex: contador de concluidos mudou ({CAMPAIGN_MEMORY['baseline_done']} -> {count}) - reavaliando a fila.")
+
+    if pending:
+        if count is None:
+            count = read_codex_completed_count(page)
+        target = pick_campaign_target(page, pending, log)
+        CAMPAIGN_MEMORY["baseline_done"] = count
+        CAMPAIGN_MEMORY["last_full"] = CAMPAIGN_MEMORY["last_check"] = now
+    else:
+        target = None
+        CAMPAIGN_MEMORY["last_full"] = 0.0
     if target is None:
         finish_campaign_queue(page, queue, log)
         return True
