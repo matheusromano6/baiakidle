@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.14.0"
+VERSION = "4.14.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1755,6 +1755,12 @@ def codex_hunts_view(page, log):
     devolve o que mexeu (filtros, atributo, busca) e fecha o Codex - a rotina
     de entrega depende desses filtros ligados e os reafirma a cada ciclo, mas
     devolver aqui evita brigar com ela no meio."""
+    if page.is_visible("#picker-modal"):
+        # a janela de Hunts/Chefes aberta por cima intercepta os cliques - sem
+        # fechar, nada do Codex abaixo responde (visto ao vivo).
+        page.keyboard.press("Escape")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
     if not page.is_visible(".codex-side"):
         page.click("#tab-progressao", timeout=3000)
         page.click("#tab-codex", timeout=3000)

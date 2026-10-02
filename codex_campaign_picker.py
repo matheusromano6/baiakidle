@@ -38,7 +38,8 @@ class CodexCampaignPicker(ctk.CTkToplevel):
         self.focus_force()
 
         self.entries = entries
-        self.hunt_names = [h["name"] for h in hunts]
+        self.hunts_by_name = {h["name"]: h for h in hunts}
+        self.hunt_names = list(self.hunts_by_name)
         # ordem de marcacao + atributo em que cada uma foi marcada + se paga desbloqueio
         self.order = [item["name"] for item in queue]
         self.selected_attr = {item["name"]: item.get("attr", "") for item in queue}
@@ -112,6 +113,9 @@ class CodexCampaignPicker(ctk.CTkToplevel):
     def hunt_for(self, entry):
         return bot.match_hunt_for_codex_base(entry["base"], self.hunt_names)
 
+    def hunt_level(self, hunt_name):
+        return (self.hunts_by_name.get(hunt_name) or {}).get("level")
+
     def refresh(self):
         if not self.on_refresh:
             return
@@ -125,7 +129,8 @@ class CodexCampaignPicker(ctk.CTkToplevel):
             self.refresh_button.configure(state="normal", text="Atualizar lista")
             if entries:
                 self.entries = entries
-                self.hunt_names = [h["name"] for h in hunts]
+                self.hunts_by_name = {h["name"]: h for h in hunts}
+                self.hunt_names = list(self.hunts_by_name)
             self.render_list()
 
         self.after(0, apply)
@@ -187,7 +192,11 @@ class CodexCampaignPicker(ctk.CTkToplevel):
         if not queue:
             self.summary_label.configure(text="Fila vazia - marque entradas abaixo.")
             return
-        parts = [f"{short_name(q['name'])} ({ATTR_LABEL.get(q['attr'], q['attr'])} {format_pct(q['pct'])}%)" for q in queue]
+        parts = []
+        for q in queue:
+            level = self.hunt_level(q["hunt"])
+            level_text = f" - lvl {level}" if level is not None else ""
+            parts.append(f"{short_name(q['name'])} ({ATTR_LABEL.get(q['attr'], q['attr'])} {format_pct(q['pct'])}%{level_text})")
         self.summary_label.configure(text=f"Fila ({len(queue)}): " + "  >  ".join(parts))
 
     def render_list(self):
@@ -221,7 +230,9 @@ class CodexCampaignPicker(ctk.CTkToplevel):
             box.pack(fill="x", padx=4, pady=3)
 
             var = tk.BooleanVar(value=name in self.selected_attr and self.selected_attr[name] == attr)
-            title = f"{format_pct(entry['bonuses'][attr])}%   {short_name(name)}   [{entry['progress']:.0f}%]"
+            level = self.hunt_level(hunt) if hunt else None
+            level_text = f"   lvl {level}" if level is not None else ""
+            title = f"{format_pct(entry['bonuses'][attr])}%   {short_name(name)}   [{entry['progress']:.0f}%]{level_text}"
             check = ctk.CTkCheckBox(
                 box, text=title, variable=var,
                 command=lambda n=name, a=attr, v=var: self.toggle_entry(n, a, v),
@@ -234,11 +245,13 @@ class CodexCampaignPicker(ctk.CTkToplevel):
             notes = [entry["bonus_text"]]
             if not hunt:
                 notes.append("sem hunt correspondente na lista do jogo")
+            if hunt and (self.hunts_by_name.get(hunt) or {}).get("locked"):
+                notes.append(f"hunt '{hunt}' (lvl {level}) ainda bloqueada no jogo")
             if queued_elsewhere:
                 notes.append(f"ja na fila em '{ATTR_LABEL.get(self.selected_attr[name], '')}'")
             ctk.CTkLabel(
                 box, text="  -  ".join(notes),
-                font=theme.FONT_BODY, text_color=theme.MUTED, justify="left", wraplength=560,
+                font=theme.FONT_BODY, text_color=theme.MUTED, justify="left", wraplength=500, anchor="w",
             ).pack(anchor="w", padx=30)
 
             if locked:
