@@ -15,6 +15,7 @@ from boss_picker import BossPicker, _Tooltip
 from attribute_picker import AttributePicker
 from build_config_picker import BuildConfigPicker
 from hunt_picker import HuntPicker
+from codex_campaign_picker import CodexCampaignPicker
 
 MAX_LOG_LINES = 500
 LOG_DIR = os.path.join(bot.data_dir(), "logs")
@@ -641,6 +642,48 @@ class BotGUI:
             on_refresh=on_refresh,
         )
 
+    def open_codex_campaign_picker(self, step):
+        def on_saved(queue):
+            step["queue"] = queue
+            bot.save_routines(self.routines)
+            bot.reset_campaign_memory()
+            bot.FORCE_RUN_NOW.add("campanha_codex")
+            if queue and not self.flags["campanha_codex"].is_set():
+                self.log("Campanha de Codex salva - marque a rotina 'Campanha de Codex' pra ativar.")
+            self.rebuild_routine_rows()
+
+        def on_refresh(callback):
+            def worker():
+                data = None
+                try:
+                    if self.thread is not None and self.thread.is_alive():
+                        data = bot.request_codex_refresh_from_bot()  # o bot rodando atende na propria thread
+                    else:
+                        data = bot.fetch_codex_campaign_data(log=self.log)
+                except Exception as error:
+                    self.log(f"  Erro ao ler o Codex: {error}")
+                if data and data.get("entries"):
+                    # guarda - da proxima vez abre na hora, sem ir ao jogo
+                    self.settings["codex_entries_cache"] = data["entries"]
+                    if data.get("hunts"):
+                        self.settings["hunts_cache"] = data["hunts"]
+                    bot.save_settings(self.settings)
+                    callback(data["entries"], data.get("hunts") or self.settings.get("hunts_cache") or [])
+                else:
+                    self.log("  Nao consegui ler o Codex - mantendo a lista salva.")
+                    callback(None, [])
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        CodexCampaignPicker(
+            self.root,
+            self.settings.get("codex_entries_cache") or [],
+            self.settings.get("hunts_cache") or [],
+            step.get("queue", []),
+            on_saved=on_saved,
+            on_refresh=on_refresh,
+        )
+
     def build_status_panel(self):
         ctk.CTkLabel(self.root, text="STATUS", font=theme.FONT_HEADER, text_color=theme.MUTED).pack(
             anchor="w", padx=20
@@ -1038,6 +1081,22 @@ class BotGUI:
                     command=open_boss_picker,
                 ).pack(side="right", padx=4)
 
+            # 'dom_codex_campaign' tem a fila de entradas do Codex (por
+            # recompensa) - mesma ideia dos chefes: tela propria.
+            for step in routine["steps"]:
+                if step.get("type") != "dom_codex_campaign":
+                    continue
+                ctk.CTkButton(
+                    row,
+                    text=f"Campanha ({len(step.get('queue', []))})",
+                    width=100,
+                    fg_color=theme.PANEL_ALT,
+                    hover_color=theme.BORDER,
+                    text_color=theme.MUTED,
+                    font=theme.FONT_BODY,
+                    command=lambda step=step: self.open_codex_campaign_picker(step),
+                ).pack(side="right", padx=4)
+
             # 'dom_tier_sort' tambem tem uma lista grande de atributos de raridade
             # (Exp, Loot, Crit Chance...) pra marcar - mesmo padrao dos chefes.
             for step in routine["steps"]:
@@ -1190,6 +1249,12 @@ class BotGUI:
             if routine["id"] == routine_id:
                 routine["enabled"] = self.routine_rows[routine_id].get()
         bot.save_routines(self.routines)
+        if routine_id == "campanha_codex":
+            # ligar/desligar a campanha: esquece a hunt-alvo (desligada, a hunt
+            # padrao volta a ser a base) e, se ligou, ja avalia agora.
+            bot.reset_campaign_memory()
+            if flag.is_set():
+                bot.FORCE_RUN_NOW.add("campanha_codex")
 
     def toggle_color_panel(self, routine_id):
         if routine_id in self.expanded_routines:

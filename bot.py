@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import platform
@@ -14,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.13.2"
+VERSION = "4.14.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -219,6 +220,19 @@ LAST_KNOWN_HUNT_MEMORY = {"name": None}
 # sempre pra ESSA hunt, em vez de tentar adivinhar "a de antes". Vazia =
 # mantem o comportamento antigo (volta pra ultima hunt conhecida).
 DEFAULT_HUNT_MEMORY = {"name": ""}
+
+# Campanha de Codex (ver execute_dom_codex_campaign_step): 'target_hunt' e a
+# hunt do primeiro item da fila que ainda nao terminou - quando preenchida, ela
+# vira a hunt "base" no lugar da hunt padrao (ver return_to_default_hunt).
+# 'done' = entradas ja vistas como concluidas (nunca voltam atras, entao nao
+# precisam ser relidas); 'skip_until' (monotonic) = entradas puladas por um
+# tempo (hunt inalcancavel, desbloqueio que falhou); 'travel_fails' = ciclos
+# seguidos sem conseguir chegar na hunt alvo; 'training_sent' evita mandar pro
+# treino online de novo a cada ciclo depois que a fila acabou.
+CAMPAIGN_MEMORY = {
+    "target_hunt": None, "target_entry": None, "done": set(),
+    "skip_until": {}, "travel_fails": 0, "training_sent": False, "missing_logged": set(),
+}
 
 
 def resource_dir():
@@ -919,6 +933,14 @@ DEFAULT_ROUTINES = [
         ],
     },
     {
+        "id": "campanha_codex",
+        "name": "Campanha de Codex",
+        "enabled": False,
+        "skip_when_training": True,
+        "trigger": {"mode": "interval", "seconds": 60},
+        "steps": [{"type": "dom_codex_campaign", "queue": []}],
+    },
+    {
         # entrega o Codex ANTES de vender - senao um item que servia pro Codex
         # pode ser vendido antes da entrega rodar (Entregar Codex sozinho era
         # bem mais lento que Vender Loot, entao a venda sempre ganhava na
@@ -1147,13 +1169,28 @@ def _ensure_mandatory_vender_loot_steps(routines):
     return changed
 
 
+def _ensure_campaign_routine(routines):
+    """Um 'routines.json' salvo antes da Campanha de Codex existir nao tem a
+    rotina dela - adiciona (desligada, fila vazia) logo apos a do Bestiary
+    pra todo mundo ganhar o botao 'Campanha' sem editar arquivo na mao.
+    Retorna True se adicionou."""
+    if any(r.get("id") == "campanha_codex" for r in routines):
+        return False
+    template = next(r for r in DEFAULT_ROUTINES if r["id"] == "campanha_codex")
+    position = next((i + 1 for i, r in enumerate(routines) if r.get("id") == "bestiary_hunt"), len(routines))
+    routines.insert(position, json.loads(json.dumps(template)))
+    return True
+
+
 def load_routines():
     path = routines_path()
     if not os.path.exists(path):
         save_routines(DEFAULT_ROUTINES)
     with open(path, "r", encoding="utf-8") as file:
         routines = json.load(file)
-    if _ensure_mandatory_vender_loot_steps(routines):
+    changed = _ensure_mandatory_vender_loot_steps(routines)
+    changed = _ensure_campaign_routine(routines) or changed
+    if changed:
         save_routines(routines)
     return routines
 
@@ -1604,6 +1641,463 @@ def execute_dom_watch_favorite_step(page, step, log):
             record_activity(f"Codex completo: '{name}' - pronto pra trocar de hunt.")
         break
 
+    return True
+
+
+# ---------- Campanha de Codex ----------
+# Atributos do filtro nativo do Codex ('.cx-attr') - valor interno do jogo e
+# o texto que aparece na recompensa de cada entrada ('.cx-entry-bonus').
+CODEX_ATTRIBUTES = [
+    ("atkPct", "Ataque"), ("armorFlat", "Armadura"), ("defFlat", "Defesa"), ("hpPct", "Vida"),
+    ("manaPct", "Mana"), ("critChance", "Chance de crítico"), ("critDmg", "Dano crítico"),
+    ("absorbPct", "Resistência elemental"), ("elementDmgPct", "Dano elemental"),
+    ("lifeLeech", "Roubo de vida"), ("manaLeech", "Roubo de mana"), ("spellDmgPct", "Dano de magia"),
+    ("spellHealPct", "Cura de magia"), ("moveSpeed", "Velocidade de movimento"),
+    ("onslaught", "Onslaught (fatal)"),
+]
+CODEX_ATTR_BY_LABEL = {label.lower(): value for value, label in CODEX_ATTRIBUTES}
+CODEX_FILTER_LABELS = ("Entregáveis", "Esconder concluídos", "Esconder bloqueadas")
+ROMAN_LEVELS = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
+CAMPAIGN_SKIP_SECONDS = 15 * 60
+CAMPAIGN_MAX_TRAVEL_FAILS = 3
+
+CODEX_ENTRIES_JS = """() => Array.from(document.querySelectorAll('.cx-list .cx-entry')).map(e => {
+    const nameEl = e.querySelector('.cx-entry-name');
+    const bar = e.querySelector('.cx-bar-fill');
+    const btn = e.querySelector('.cx-entry-side button.cx-give');
+    const m = ((bar && bar.getAttribute('style')) || '').match(/width:\\s*([\\d.]+)%/);
+    const btnText = btn ? btn.textContent.trim() : '';
+    const unlock = /^Desbloquear/i.test(btnText);
+    return {
+        name: ((nameEl && (nameEl.getAttribute('title') || nameEl.textContent)) || '').trim(),
+        slug: (e.querySelector('.cx-entry-num') && e.querySelector('.cx-entry-num').getAttribute('title')) || '',
+        bonus_text: ((e.querySelector('.cx-entry-bonus') || {}).textContent || '').trim(),
+        progress: m ? parseFloat(m[1]) : 0,
+        done: e.classList.contains('done'),
+        locked: unlock || !!(nameEl && nameEl.querySelector('svg')),
+        unlock_text: unlock ? btnText : '',
+    };
+})"""
+
+
+def format_gold(value):
+    return f"{int(value):,}".replace(",", ".")
+
+
+def parse_codex_bonus(text):
+    """'Dano crítico +0,370% · Chance de crítico +0,071%' ->
+    {'critDmg': 0.37, 'critChance': 0.071}. Partes com atributo desconhecido
+    sao ignoradas."""
+    bonuses = {}
+    for part in re.split(r"\s*[·•]\s*", text or ""):
+        match = re.match(r"^(.*?)\s*\+\s*([\d.,]+)\s*%?\s*$", part.strip())
+        if not match:
+            continue
+        attr = CODEX_ATTR_BY_LABEL.get(match.group(1).strip().lower())
+        if not attr:
+            continue
+        try:
+            bonuses[attr] = float(match.group(2).replace(".", "").replace(",", "."))
+        except ValueError:
+            continue
+    return bonuses
+
+
+def split_codex_entry_name(raw_name):
+    """'Domínio: Wereliones II' -> ('Wereliones', 2); sem numeral = nivel 1."""
+    name = (raw_name or "").strip()
+    if ":" in name:
+        name = name.split(":", 1)[1].strip()
+    parts = name.rsplit(" ", 1)
+    if len(parts) == 2 and parts[1].lower() in ROMAN_LEVELS:
+        return parts[0].strip(), ROMAN_LEVELS[parts[1].lower()]
+    return name, 1
+
+
+def match_hunt_for_codex_base(base, hunt_names):
+    """Acha a hunt do jogo que corresponde a base de uma entrada do Codex
+    ('Wereliones II' -> base 'Wereliones'). Nome igual (sem diferenciar
+    maiusculas) ou, na falta, o unico nome que contem/esta contido na base.
+    Retorna None se nao achar (ou se ficar ambiguo)."""
+    wanted = base.strip().lower()
+    names = [n for n in hunt_names if n]
+    for name in names:
+        if name.strip().lower() == wanted:
+            return name
+    candidates = [n for n in names if wanted in n.lower() or n.strip().lower() in wanted]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def build_codex_entry(raw):
+    base, level = split_codex_entry_name(raw["name"])
+    cost = 0
+    if raw.get("unlock_text") and "·" in raw["unlock_text"]:
+        digits = re.sub(r"\D", "", raw["unlock_text"].split("·", 1)[1])
+        cost = int(digits) if digits else 0
+    return {
+        "name": raw["name"],
+        "slug": raw.get("slug", ""),
+        "base": base,
+        "level": level,
+        "bonus_text": raw.get("bonus_text", ""),
+        "bonuses": parse_codex_bonus(raw.get("bonus_text", "")),
+        "progress": raw.get("progress", 0),
+        "status": "done" if raw.get("done") else ("locked" if raw.get("locked") else "open"),
+        "unlock_cost": cost,
+    }
+
+
+@contextlib.contextmanager
+def codex_hunts_view(page, log):
+    """Abre o Codex (Progressao > Codex, igual a rotina de entrega), vai pra
+    aba 'Hunts' e desliga os 3 filtros que escondem entradas (Entregaveis /
+    Esconder concluidos / Esconder bloqueadas) pra enxergar TUDO. Ao sair,
+    devolve o que mexeu (filtros, atributo, busca) e fecha o Codex - a rotina
+    de entrega depende desses filtros ligados e os reafirma a cada ciclo, mas
+    devolver aqui evita brigar com ela no meio."""
+    if not page.is_visible(".codex-side"):
+        page.click("#tab-progressao", timeout=3000)
+        page.click("#tab-codex", timeout=3000)
+        page.wait_for_selector(".codex-side", timeout=4000)
+        page.wait_for_timeout(500)
+    unchecked = []
+    previous_attr = ""
+    try:
+        page.click('.codex-side .codex-tab:has-text("Hunts")', timeout=3000)
+        search = page.query_selector(".cx-search")
+        if search is not None and (search.input_value() or ""):
+            search.fill("", timeout=3000)
+        for label in CODEX_FILTER_LABELS:
+            checkbox = page.locator(f'label.cx-check:has-text("{label}") input[type="checkbox"]')
+            if checkbox.count() and checkbox.first.is_checked():
+                page.locator(f'label.cx-check:has-text("{label}")').first.click(timeout=3000)
+                unchecked.append(label)
+        attr_el = page.query_selector(".cx-attr")
+        previous_attr = attr_el.input_value() if attr_el else ""
+        page.wait_for_timeout(400)
+        yield
+    finally:
+        try:
+            attr_el = page.query_selector(".cx-attr")
+            if attr_el is not None and attr_el.input_value() != previous_attr:
+                attr_el.select_option(previous_attr, timeout=3000)
+            search = page.query_selector(".cx-search")
+            if search is not None and (search.input_value() or ""):
+                search.fill("", timeout=3000)
+            for label in unchecked:
+                checkbox = page.locator(f'label.cx-check:has-text("{label}") input[type="checkbox"]')
+                if checkbox.count() and not checkbox.first.is_checked():
+                    page.locator(f'label.cx-check:has-text("{label}")').first.click(timeout=3000)
+            page.click("#codex-modal-close", timeout=2000)
+        except Exception as error:
+            log(f"  Aviso: nao consegui devolver o Codex ao estado de antes: {error}")
+
+
+def read_codex_hunt_entries(page, attr=""):
+    """Dentro de 'codex_hunts_view': filtra pelo atributo ('' = todos) e le as
+    entradas de TODAS as paginas (o jogo mostra 30 por pagina; com atributo
+    escolhido geralmente cabe em 1). Volta pra 1a pagina no fim."""
+    page.select_option(".cx-attr", attr, timeout=3000)
+    page.wait_for_timeout(700)
+    entries, seen = [], set()
+    for _ in range(40):
+        for raw in page.evaluate(CODEX_ENTRIES_JS):
+            if raw["name"] and raw["name"] not in seen:
+                seen.add(raw["name"])
+                entries.append(build_codex_entry(raw))
+        if not click_codex_pager_button(page, 2):  # 2 = 'proxima'
+            break
+        page.wait_for_timeout(450)
+    try:  # voltar pra 1a pagina e' so' arrumacao - nao pode derrubar a leitura
+        click_codex_pager_button(page, 0)  # 0 = 'primeira'
+    except Exception:
+        pass
+    return entries
+
+
+def click_codex_pager_button(page, index):
+    """Clica num botao do paginador do Codex por POSICAO (0 primeira, 1
+    anterior, 2 proxima, 3 ultima) - o 'title' da 'proxima' some a partir da
+    2a pagina (confirmado ao vivo) e o paginador e' recriado a cada troca, o
+    que invalida referencias guardadas; por isso o clique e' feito dentro da
+    propria pagina, no momento. Retorna False se nao ha como avancar."""
+    return bool(page.evaluate(
+        """(index) => {
+            const buttons = document.querySelectorAll('#codex-pager:not(.hidden) .cx-pgbtn');
+            if (buttons.length < 4 || buttons[index].disabled) return false;
+            buttons[index].click();
+            return true;
+        }""",
+        index,
+    ))
+
+
+def read_codex_campaign_data(page, log):
+    """Le TODAS as entradas de Hunts do Codex (recompensa, progresso,
+    bloqueio) + a lista de Hunts do jogo, numa pagina ja conectada."""
+    with codex_hunts_view(page, log):
+        entries = read_codex_hunt_entries(page, "")
+    hunts = read_hunt_list(page, log)
+    return {"entries": entries, "hunts": hunts}
+
+
+def fetch_codex_campaign_data(log=print):
+    """Com o bot PARADO: conecta no Chrome (abrindo se precisar) e le os
+    dados da Campanha de Codex. Com o bot rodando, use
+    'request_codex_refresh_from_bot' - mexer no Codex numa segunda conexao
+    briga com a rotina de entrega, que abre/fecha o mesmo painel."""
+    if not launch_browser(log):
+        return None
+    with sync_playwright() as playwright:
+        page = connect_game_page(playwright)
+        return read_codex_campaign_data(page, log)
+
+
+# Pedido de atualizacao da lista da Campanha feito pela GUI com o bot rodando:
+# a propria thread do bot atende (no proximo tick, ve 'run'), ja que ela e'
+# quem tem a conexao com o jogo e nao concorre com as outras rotinas.
+CODEX_REFRESH_REQUEST = {"pending": False, "result": None, "done": threading.Event()}
+
+
+def request_codex_refresh_from_bot(timeout=120):
+    """Pede pra thread do bot ler os dados da Campanha de Codex e espera a
+    resposta (None se demorar demais ou falhar)."""
+    CODEX_REFRESH_REQUEST["result"] = None
+    CODEX_REFRESH_REQUEST["done"].clear()
+    CODEX_REFRESH_REQUEST["pending"] = True
+    if not CODEX_REFRESH_REQUEST["done"].wait(timeout):
+        CODEX_REFRESH_REQUEST["pending"] = False
+        return None
+    return CODEX_REFRESH_REQUEST["result"]
+
+
+def reset_campaign_memory():
+    """Chamado pela GUI quando a fila muda - esquece o que ja decidiu."""
+    CAMPAIGN_MEMORY.update({
+        "target_hunt": None, "target_entry": None, "done": set(), "skip_until": {},
+        "travel_fails": 0, "training_sent": False, "missing_logged": set(),
+    })
+
+
+def codex_prerequisite_done(page, entry):
+    """O nivel anterior da mesma hunt (ex: 'Wereliones I' pra 'Wereliones II')
+    ja esta concluido? Busca pelo nome da hunt, sem filtro de atributo.
+    Dentro de 'codex_hunts_view'."""
+    if entry["level"] <= 1:
+        return True
+    page.select_option(".cx-attr", "", timeout=3000)
+    search = page.query_selector(".cx-search")
+    if search is None:
+        return False
+    try:
+        search.fill(entry["base"], timeout=3000)
+        page.wait_for_timeout(800)
+        previous = [
+            e for e in (build_codex_entry(raw) for raw in page.evaluate(CODEX_ENTRIES_JS))
+            if e["base"].lower() == entry["base"].lower() and e["level"] == entry["level"] - 1
+        ]
+    finally:
+        search.fill("", timeout=3000)
+        page.wait_for_timeout(300)
+    return bool(previous) and previous[0]["status"] == "done"
+
+
+def try_unlock_codex_entry(page, queue_item, entry, log):
+    """Paga o desbloqueio de uma entrada do Codex (so' chamada se o usuario
+    marcou 'pagar desbloqueio' pra essa entrada na Campanha). Trava de
+    seguranca em camadas: o custo atual nao pode passar do valor autorizado
+    quando ele marcou; o nivel anterior precisa estar concluido; e o botao de
+    confirmacao do jogo precisa mesmo dizer 'Desbloquear' antes do clique.
+    Dentro de 'codex_hunts_view' (com o atributo da entrada selecionado)."""
+    name = entry["name"]
+    cost = entry.get("unlock_cost") or 0
+    authorized = queue_item.get("unlock_cost") or 0
+    if not cost or cost > authorized:
+        log(f"  Desbloqueio de '{name}' custa {format_gold(cost)} (autorizado ate {format_gold(authorized)}) - NAO desbloqueado.")
+        return False
+    if not codex_prerequisite_done(page, entry):
+        log(f"  '{name}': o nivel anterior ainda nao foi concluido - nao desbloqueio ainda.")
+        return False
+
+    page.select_option(".cx-attr", queue_item.get("attr", ""), timeout=3000)
+    page.wait_for_timeout(700)
+    index = page.evaluate(
+        """(wanted) => Array.from(document.querySelectorAll('.cx-list .cx-entry')).findIndex(
+            e => ((e.querySelector('.cx-entry-name')?.getAttribute('title')) || '').trim() === wanted
+        )""",
+        name,
+    )
+    rows = page.query_selector_all(".cx-list .cx-entry")
+    if index is None or index < 0 or index >= len(rows):
+        log(f"  Nao achei '{name}' na tela pra desbloquear.")
+        return False
+    button = rows[index].query_selector("button.cx-give")
+    if button is None or not (button.text_content() or "").strip().lower().startswith("desbloquear"):
+        log(f"  '{name}': botao de desbloqueio nao encontrado.")
+        return False
+
+    log(f"  Desbloqueando '{name}' ({format_gold(cost)} de gold)...")
+    button.click(timeout=3000)
+    try:
+        confirm = page.wait_for_selector("#confirm-yes", timeout=3000, state="visible")
+    except Exception:
+        log("  Confirmacao do desbloqueio nao apareceu.")
+        return False
+    # a janela de confirmacao traz o nome da entrada, o custo e o saldo
+    # (confirmado ao vivo: 'Desbloquear "Dominio: X"? / Custo do desbloqueio
+    # 50.000.000 / Seu saldo ...') - so confirma se bater com o nome E o
+    # custo esperados, nao so' pelo texto do botao.
+    confirm_text = (confirm.text_content() or "").strip()
+    try:
+        body_text = (page.inner_text("#confirm-modal-body", timeout=2000) or "").strip()
+    except Exception:
+        body_text = ""
+    if (
+        "desbloquear" not in confirm_text.lower()
+        or name not in body_text
+        or format_gold(cost) not in body_text
+    ):
+        log(f"  BLOQUEADO por seguranca: a confirmacao nao e' a esperada ('{confirm_text}' / '{body_text[:120]}') - cancelando.")
+        try:
+            page.click("#confirm-no", timeout=2000)
+        except Exception:
+            page.keyboard.press("Escape")
+        return False
+    confirm.click(timeout=3000)
+    page.wait_for_timeout(1200)
+
+    refreshed = next(
+        (e for e in (build_codex_entry(raw) for raw in page.evaluate(CODEX_ENTRIES_JS)) if e["name"] == name), None
+    )
+    if refreshed is not None and refreshed["status"] == "locked":
+        log(f"  '{name}' continua bloqueada apos confirmar (gold insuficiente?).")
+        return False
+    log(f"  '{name}' desbloqueada.")
+    record_activity(f"Codex desbloqueado: '{name}' ({format_gold(cost)} de gold).")
+    return True
+
+
+def pick_campaign_target(page, pending, log):
+    """Abre o Codex uma vez e devolve o primeiro item da fila ('pending', ja
+    na ordem) que da' pra trabalhar agora: aberto, ou bloqueado MAS com
+    desbloqueio autorizado e conseguido. Marca como feitas as ja 100%."""
+    by_attr = {}
+    now = time.monotonic()
+    with codex_hunts_view(page, log):
+        for item in pending:
+            name = item["name"]
+            attr = item.get("attr", "")
+            if attr not in by_attr:
+                by_attr[attr] = {e["name"]: e for e in read_codex_hunt_entries(page, attr)}
+            entry = by_attr[attr].get(name)
+            if entry is None:
+                if name not in CAMPAIGN_MEMORY["missing_logged"]:
+                    CAMPAIGN_MEMORY["missing_logged"].add(name)
+                    log(f"  Campanha de Codex: '{name}' nao apareceu no Codex (renomeada?) - pulando.")
+                continue
+            if entry["status"] == "done":
+                CAMPAIGN_MEMORY["done"].add(name)
+                log(f"  '{name}' completou 100% no Codex!")
+                play_achievement_sound()
+                record_activity(f"Codex completo: '{name}'.")
+                continue
+            if entry["status"] == "locked":
+                if not item.get("unlock_ok"):
+                    if name not in CAMPAIGN_MEMORY["missing_logged"]:
+                        CAMPAIGN_MEMORY["missing_logged"].add(name)
+                        log(f"  '{name}' esta bloqueada e o desbloqueio nao foi autorizado - pulando.")
+                    continue
+                if try_unlock_codex_entry(page, item, entry, log):
+                    return item
+                CAMPAIGN_MEMORY["skip_until"][name] = now + CAMPAIGN_SKIP_SECONDS
+                continue
+            return item
+    return None
+
+
+def finish_campaign_queue(page, queue, log):
+    """Nada (mais) pra fazer na fila: volta pra hunt padrao; sem hunt padrao,
+    vai pro treino online. Feito uma vez so' (CAMPAIGN_MEMORY['training_sent'])."""
+    had_target = CAMPAIGN_MEMORY["target_entry"] is not None
+    CAMPAIGN_MEMORY["target_hunt"] = None
+    CAMPAIGN_MEMORY["target_entry"] = None
+    if had_target and all(item["name"] in CAMPAIGN_MEMORY["done"] for item in queue):
+        log("  Campanha de Codex concluida - todas as entradas da fila completas.")
+        record_activity("Campanha de Codex concluida.")
+    if CAMPAIGN_MEMORY["training_sent"]:
+        return
+    CAMPAIGN_MEMORY["training_sent"] = True
+    if load_settings().get("default_hunt", ""):
+        log("  Fila da Campanha sem nada pra fazer agora - voltando pra hunt padrao.")
+        return_to_default_hunt(page, log, force=True)
+        return
+    log("  Fila da Campanha sem nada pra fazer e sem hunt padrao - indo pro treino online.")
+    LAST_KNOWN_HUNT_MEMORY["name"] = None
+    try:
+        click_open_wave(page, "#wave-title")
+        page.click('.tp-opt[data-tp="exercise"]', timeout=3000)
+        log("  'Treino online' clicado.")
+    except Exception as error:
+        log(f"  Erro ao ir pro treino online: {error}")
+
+
+def execute_dom_codex_campaign_step(page, step, log):
+    """Passo tipo 'dom_codex_campaign': percorre a fila escolhida pelo usuario
+    (step['queue'], ja ordenada: por atributo, % maior primeiro) e trabalha no
+    primeiro item ainda nao concluido - a hunt dele vira a hunt 'base' (ve
+    return_to_default_hunt), entao chefes/tasks de guild interrompem e o bot
+    volta pra ela sozinho. Concluiu um item -> segue pro proximo da fila; fila
+    esgotada -> hunt padrao, ou treino online se nao houver (ve
+    finish_campaign_queue). Tasks de guild em andamento tem prioridade."""
+    queue = step.get("queue") or []
+    if not queue:
+        CAMPAIGN_MEMORY["target_hunt"] = None
+        CAMPAIGN_MEMORY["target_entry"] = None
+        return True
+    if GUILD_TASK_MEMORY.get("grinding"):
+        return True
+
+    now = time.monotonic()
+    pending = [
+        item for item in queue
+        if item["name"] not in CAMPAIGN_MEMORY["done"] and CAMPAIGN_MEMORY["skip_until"].get(item["name"], 0) <= now
+    ]
+
+    # o alvo atual nao conseguiu chegar na hunt por varios ciclos seguidos
+    # (hunt inexistente/bloqueada) - pula por um tempo em vez de ficar tentando
+    target_hunt = CAMPAIGN_MEMORY["target_hunt"]
+    if target_hunt:
+        try:
+            current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+        except Exception:
+            current_hunt = target_hunt
+        if current_hunt == target_hunt:
+            CAMPAIGN_MEMORY["travel_fails"] = 0
+        else:
+            CAMPAIGN_MEMORY["travel_fails"] += 1
+            if CAMPAIGN_MEMORY["travel_fails"] >= CAMPAIGN_MAX_TRAVEL_FAILS:
+                entry_name = CAMPAIGN_MEMORY["target_entry"]
+                log(f"  Nao consegui ir pra hunt '{target_hunt}' ('{entry_name}') - pulando por {CAMPAIGN_SKIP_SECONDS // 60}min.")
+                CAMPAIGN_MEMORY["skip_until"][entry_name] = now + CAMPAIGN_SKIP_SECONDS
+                CAMPAIGN_MEMORY["target_hunt"] = None
+                CAMPAIGN_MEMORY["target_entry"] = None
+                CAMPAIGN_MEMORY["travel_fails"] = 0
+                pending = [i for i in pending if i["name"] != entry_name]
+
+    target = pick_campaign_target(page, pending, log) if pending else None
+    if target is None:
+        finish_campaign_queue(page, queue, log)
+        return True
+
+    hunt = target.get("hunt") or ""
+    if CAMPAIGN_MEMORY["target_entry"] != target["name"]:
+        log(f"  Campanha de Codex: agora '{target['name']}' (hunt '{hunt}').")
+        CAMPAIGN_MEMORY["travel_fails"] = 0
+    CAMPAIGN_MEMORY["target_entry"] = target["name"]
+    CAMPAIGN_MEMORY["target_hunt"] = hunt or None
+    CAMPAIGN_MEMORY["training_sent"] = False
+    if hunt:
+        return_to_default_hunt(page, log, force=True)
     return True
 
 
@@ -2860,7 +3354,9 @@ def execute_dom_guild_tasks_step(page, step, log):
         # 'ensure_active_hunt' ainda nao tenha rodado de novo pra atualizar
         # DEFAULT_HUNT_MEMORY (bug real ja visto: caia no fallback errado).
         DEFAULT_HUNT_MEMORY["name"] = load_settings().get("default_hunt", "")
-        target_hunt = DEFAULT_HUNT_MEMORY.get("name") or GUILD_TASK_MEMORY["previous_hunt"]
+        target_hunt = (
+            CAMPAIGN_MEMORY.get("target_hunt") or DEFAULT_HUNT_MEMORY.get("name") or GUILD_TASK_MEMORY["previous_hunt"]
+        )
         log(f"  Tasks da guild selecionadas concluidas - voltando para '{target_hunt}'...")
         ok = find_and_go_to_hunt(
             page,
@@ -3358,6 +3854,9 @@ def execute_dom_hunt_bestiary_step(page, step, log):
 
     if not ADVANCE_MEMORY.get("enabled"):
         return True
+
+    if CAMPAIGN_MEMORY.get("target_hunt"):
+        return True  # a Campanha de Codex decide pra qual hunt ir - sem avanco automatico competindo
 
     if GUILD_TASK_MEMORY.get("grinding"):
         # tasks de guild tem prioridade maior que o avanco automatico de hunt
@@ -3885,10 +4384,13 @@ def return_to_default_hunt(page, log, force=False):
     memoria do processo rodando, fazendo cair no fallback errado mesmo com a
     hunt padrao ja salva no arquivo."""
     DEFAULT_HUNT_MEMORY["name"] = load_settings().get("default_hunt", "")
-    default_hunt = DEFAULT_HUNT_MEMORY.get("name")
+    # a hunt do item atual da Campanha de Codex (se houver) vira a 'base' no
+    # lugar da hunt padrao - e o avanco automatico nao compete com ela.
+    campaign_hunt = CAMPAIGN_MEMORY.get("target_hunt")
+    default_hunt = campaign_hunt or DEFAULT_HUNT_MEMORY.get("name")
     if not default_hunt:
         return False
-    if not force and ADVANCE_MEMORY.get("enabled"):
+    if not force and ADVANCE_MEMORY.get("enabled") and not campaign_hunt:
         return True  # tem hunt padrao configurada, mas o avanco automatico tem prioridade agora
     if TRAINING_MEMORY.get("waiting"):
         # esperando a stamina recuperar (ate o limiar de 'Voltar a Cacar') pra
@@ -3908,10 +4410,11 @@ def return_to_default_hunt(page, log, force=False):
     if current_hunt == default_hunt:
         return True
 
+    base_label = "da campanha" if campaign_hunt else "padrao"
     if current_hunt:
-        log(f"  Na hunt '{current_hunt}', mas a hunt padrao e '{default_hunt}' - indo pra ela...")
+        log(f"  Na hunt '{current_hunt}', mas a hunt {base_label} e '{default_hunt}' - indo pra ela...")
     else:
-        log(f"  Sem hunt ativa - indo para a hunt padrao '{default_hunt}'...")
+        log(f"  Sem hunt ativa - indo para a hunt {base_label} '{default_hunt}'...")
     find_and_go_to_hunt(
         page,
         default_hunt,
@@ -4013,6 +4516,8 @@ def execute_step(page, step, stop_event, log, all_routines=None):
         return execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=all_routines)
     if step_type == "dom_guild_tasks":
         return execute_dom_guild_tasks_step(page, step, log)
+    if step_type == "dom_codex_campaign":
+        return execute_dom_codex_campaign_step(page, step, log)
     if step_type == "dom_hunt_bestiary":
         return execute_dom_hunt_bestiary_step(page, step, log)
     if step_type == "dom_auto_build":
@@ -4215,6 +4720,17 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                                 raise
                             log(f"Erro ao garantir hunt ativa: {error}")
                         next_hunt_check = time.monotonic() + HUNT_CHECK_INTERVAL_SECONDS
+
+                    if CODEX_REFRESH_REQUEST["pending"]:
+                        CODEX_REFRESH_REQUEST["pending"] = False
+                        try:
+                            CODEX_REFRESH_REQUEST["result"] = read_codex_campaign_data(page, log)
+                        except Exception as error:
+                            if is_connection_dead_error(error):
+                                raise
+                            log(f"Erro ao ler os dados da Campanha de Codex: {error}")
+                            CODEX_REFRESH_REQUEST["result"] = None
+                        CODEX_REFRESH_REQUEST["done"].set()
 
                     # reload periodico pra conter o vazamento de memoria do jogo
                     # (ver PAGE_RELOAD_INTERVAL_SECONDS) - so quando nao ha nada
