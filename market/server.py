@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 import analyze
 import api
+import codex
 import items
 import scanner
 from store import Store
@@ -155,6 +156,25 @@ def _craft(now):
                      item_class=info.get("class"), item_stats=_item_stats(info))
         _CRF.update(sig=sig, data=data)
     return _CRF["data"]
+
+
+_CDX = {"sig": None, "data": None}
+
+
+def _codex_state(now):
+    """Codex da conta x market (so' le o mapa que o bot gravou). Recalcula
+    quando muda o mapa, a varredura, os filtros ou a cada hora."""
+    prog = codex.load_progress(CFG)
+    prio = [k for k in (STORE.get_setting("codex_prio", "") or "").split(",") if k]
+    locked = STORE.get_setting("codex_locked", "0") == "1"
+    sig = (ACTIVE_AT, prog["_mtime"] if prog else None, tuple(prio), locked, now // 3_600_000)
+    if _CDX["sig"] != sig:
+        _CDX.update(sig=sig, data=codex.view(STORE, CFG, ACTIVE, now, prog, prio, locked))
+    out = dict(_CDX["data"])
+    out.update(prio=prio, include_locked=locked, attrs=codex.ATTRS,
+               can_refresh=codex.can_refresh(), refreshing=codex.refreshing(),
+               refresh_error=codex._REFRESHER["last_error"])
+    return out
 
 
 _STK = {"sig": None, "data": None}
@@ -365,6 +385,7 @@ def build_state():
         "gold_market": _gold_market(),
         "craft": _craft(now),
         "boss": analyze.boss_monitor(STORE, CFG, ACTIVE, now),
+        "codex": _codex_state(now),
         "attr_values": analyze.attr_multipliers(STORE, CFG),
         "stock": _stock([p for p in positions if p["state"] == "holding"], now),
         "pnl": pnl,
@@ -686,6 +707,10 @@ def act_settings(body):
     if "filter_mode" in body:
         STORE.set_setting("filter_mode",
                           "chars" if body["filter_mode"] == "chars" else "all")
+    if isinstance(body.get("codex_prio"), list):
+        STORE.set_setting("codex_prio", ",".join(k for k in body["codex_prio"] if k in codex.ATTR_LABEL))
+    if "codex_locked" in body:
+        STORE.set_setting("codex_locked", "1" if body["codex_locked"] else "0")
     return {"ok": True}, 200
 
 
@@ -766,6 +791,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(*act_create_position(body))
             if path == "/api/settings":
                 return self._send(*act_settings(body))
+            if path == "/api/codex/refresh":
+                ok, message = codex.request_refresh()
+                return self._send({"ok": ok, "message": message}, 200 if ok else 400)
             if path == "/api/scan":
                 threading.Thread(target=lambda: scanner.run_scan(CFG, STORE),
                                  daemon=True).start()

@@ -37,6 +37,7 @@ MARKET_SRC_DIR = os.path.join(HERE, "market")
 MARKET_EXCLUDE_NAMES = (
     "market.db", "market.db-shm", "market.db-wal", "backups", "chrome_profile",
     "config.json", "__pycache__", "handoff-baiak-market-alert.pdf",
+    "codex_progress.json", "codex_progress.json.tmp",  # mapa do Codex da conta (pessoal)
 )
 
 

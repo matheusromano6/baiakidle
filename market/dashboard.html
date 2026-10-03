@@ -78,6 +78,11 @@
     50%     { box-shadow: inset 3px 0 var(--good), 0 0 0 3px rgba(76,175,114,.5); background: rgba(76,175,114,.2); }
   }
   tr.flash-row td { animation: flashPulse 1s ease-in-out infinite; }
+  .cxp{font-size:12px;padding:3px 10px;border-radius:14px}
+  .cxp.on{background:var(--accent);color:#1a1200;border-color:var(--accent);font-weight:600}
+  .cxbar{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden;min-width:90px;margin-top:4px}
+  .cxbar i{display:block;height:100%;background:var(--good)}
+  #cxItems td:first-child, #cxEntries td:first-child{min-width:170px}
   /* Procurar por oferta: borda de referencia rapida - achou (azul) -> falta
      10min (laranja) -> falta 1min (vermelho, reaproveita o pulso de alert-row) */
   tr.b-found td:first-child, tr.b-soon td:first-child { position: relative; }
@@ -182,7 +187,7 @@
     <a href="#secGear">Equipamento <span class="cnt" data-cnt="gear"></span></a>
     <a href="#secStack">Lote <span class="cnt" data-cnt="stack"></span></a>
     <a href="#secGold" id="navGold">Gold <span class="cnt" data-cnt="gold"></span></a>
-    <a href="#secBoss" title="boss token x addon casket: 500 tokens = 1 addon">Boss Token <span class="cnt" data-cnt="boss"></span></a>
+    <a href="#secCodex" title="o que falta no seu Codex x leilões de empilháveis">Codex <span class="cnt" data-cnt="codex"></span></a>
     <a href="#secCraft" title="comprar item com Exp no nível 1, upar com gemas e revender">Compra/Venda <span class="cnt" data-cnt="craft"></span></a>
     <a href="#secOpen">Posições <span class="cnt" data-cnt="open"></span></a>
     <a href="#secStock" title="o que você comprou e ainda não vendeu nem usou">Estoque <span class="cnt" data-cnt="stock"></span></a>
@@ -280,7 +285,30 @@
       <th title="anúncios iguais ativos agora; embaixo, vendedores por comprador até fecharem (>1 = preço sofre)">No mercado</th>
       <th>Lances</th><th>Encerra</th><th></th>
     </tr></thead><tbody></tbody>
-  </table></div><div class="empty" id="stackEmpty" hidden>-</div></div>
+  </table></div><div class="empty" id="stackEmpty" hidden>-</div>
+  <details id="bossBox" style="margin-top:12px">
+    <summary style="cursor:pointer"><strong>Boss Token</strong> <span class="mut" id="bossSum" style="font-size:12px" title="500 boss tokens = 1 addon casket (50 coins na loja): cada token vale 0,10 coin de uso">500 tokens = 1 addon</span></summary>
+      <div id="bossCards"></div>
+      <div style="overflow-x:auto;margin-top:10px"><table id="bossTable">
+        <thead><tr>
+          <th title="tokens no lote">Lote</th><th>Preço agora</th>
+          <th title="preço agora convertido pra 500 tokens (= 1 addon)">500 tokens</th>
+          <th title="quanto o lote vale em coins de addon (500 tokens = 1 addon)">Vale</th>
+          <th title="valor do lote menos a margem mínima (boss_min_margin): dê lance só até aqui e largue se passar - você não perde nada se o preço subir">Teto de lance</th>
+          <th title="preço final típico (mediana) dos últimos fechamentos de lotes parecidos - o desfecho é dividido: ou ninguém disputa e fecha no piso, ou vira briga e passa do valor">Fecha típico</th>
+          <th title="fatia dos últimos fechamentos de lotes parecidos em que este lote ficaria abaixo do teto (o preço nunca fecha abaixo do de agora)">Chance ≤ teto</th>
+          <th title="lucro esperado de quem dá lance só até o teto = chance × lucro médio quando ganha (se o preço passar, você larga: lucro 0)">Lucro esperado</th>
+          <th>Veredito</th><th>Encerra</th>
+        </tr></thead><tbody></tbody>
+      </table></div>
+      <div class="empty" id="bossEmpty" hidden>nenhum leilão de boss token compensa agora</div>
+      <div style="overflow-x:auto;margin-top:12px"><table id="bossDaily">
+        <thead><tr><th>Dia</th><th title="mediana do custo de 500 tokens nos fechamentos do dia">Custo de 500 tokens</th>
+          <th title="fatia dos fechamentos em que 500 tokens custaram menos que o addon">Abaixo do addon</th><th>Vendas</th><th>Lances médios</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+  </details>
+  </div>
 
   <h2 id="secGold">Oportunidades - Gold</h2>
   <div class="panel">
@@ -297,27 +325,36 @@
     </tr></thead><tbody></tbody>
   </table></div><div class="empty" id="goldEmpty" hidden>-</div></div>
 
-  <h2 id="secBoss" class="sec" data-sec="boss" title="clique pra expandir/recolher">Boss Token <span class="secn mut"></span></h2>
+  <h2 id="secCodex" class="sec" data-sec="codex" title="clique pra expandir/recolher">Codex x Market <span class="secn mut"></span></h2>
   <div class="panel">
-    <div id="bossCards"></div>
-    <div style="overflow-x:auto;margin-top:10px"><table id="bossTable">
-      <thead><tr>
-        <th title="tokens no lote">Lote</th><th>Preço agora</th>
-        <th title="preço agora convertido pra 500 tokens (= 1 addon)">500 tokens</th>
-        <th title="quanto o lote vale em coins de addon (500 tokens = 1 addon)">Vale</th>
-        <th title="valor do lote menos a margem mínima (boss_min_margin): dê lance só até aqui e largue se passar - você não perde nada se o preço subir">Teto de lance</th>
-        <th title="preço final típico (mediana) dos últimos fechamentos de lotes parecidos - o desfecho é dividido: ou ninguém disputa e fecha no piso, ou vira briga e passa do valor">Fecha típico</th>
-        <th title="fatia dos últimos fechamentos de lotes parecidos em que este lote ficaria abaixo do teto (o preço nunca fecha abaixo do de agora)">Chance ≤ teto</th>
-        <th title="lucro esperado de quem dá lance só até o teto = chance × lucro médio quando ganha (se o preço passar, você larga: lucro 0)">Lucro esperado</th>
-        <th>Veredito</th><th>Encerra</th>
-      </tr></thead><tbody></tbody>
-    </table></div>
-    <div class="empty" id="bossEmpty" hidden>nenhum leilão de boss token compensa agora</div>
-    <div style="overflow-x:auto;margin-top:12px"><table id="bossDaily">
-      <thead><tr><th>Dia</th><th title="mediana do custo de 500 tokens nos fechamentos do dia">Custo de 500 tokens</th>
-        <th title="fatia dos fechamentos em que 500 tokens custaram menos que o addon">Abaixo do addon</th><th>Vendas</th><th>Lances médios</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
+    <div class="row-inline">
+      <span class="mut" id="cxStatus"></span>
+      <span style="flex:1"></span>
+      <label class="mut" style="font-size:12px;cursor:pointer"><input type="checkbox" id="cxLocked"> incluir entradas bloqueadas</label>
+      <button id="cxRefresh" title="o bot lê o Codex da sua conta no jogo (só leitura) - precisa do jogo aberto">Atualizar Codex</button>
+    </div>
+    <div class="row-inline" id="cxPrio" title="escolha os efeitos que você quer priorizar - sem nenhum marcado, mostra todos"></div>
+    <div id="cxCards"></div>
+    <div id="cxBody">
+      <h3 style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 4px">O que comprar no market <span class="mut" style="text-transform:none;letter-spacing:0">(itens que faltam nas entradas abaixo, com os leilões de agora)</span></h3>
+      <div style="overflow-x:auto"><table id="cxItems">
+        <thead><tr>
+          <th>Item</th><th title="quanto falta entregar, somado nas entradas escolhidas">Falta</th>
+          <th title="preço justo por unidade (mediana dos últimos dias) e nº de vendas">Preço justo/un</th>
+          <th title="leilões ativos agora: quantidade, preço, desconto vs o justo e quanto da sua necessidade o lote cobre. Leilão novo começa no piso (25 coins): o preço ainda pode subir">Leilões agora</th>
+        </tr></thead><tbody></tbody>
+      </table></div>
+      <div class="empty" id="cxItemsEmpty" hidden>nenhum item das entradas escolhidas à venda agora</div>
+      <h3 style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 4px">Entradas abertas <span class="mut" style="text-transform:none;letter-spacing:0">(as mais fáceis de fechar comprando no market primeiro)</span></h3>
+      <div style="overflow-x:auto"><table id="cxEntries">
+        <thead><tr>
+          <th>Entrada</th><th>Recompensa</th><th>Progresso</th>
+          <th title="o que falta de cada item e quanto custa pelos lotes de hoje (leilão novo: preço típico, nunca abaixo do preço atual; cada lote tem piso de 25 coins)">Falta (custo no market)</th>
+          <th title="soma dos itens acima comprados nos lotes mais baratos de hoje">Custo total</th>
+        </tr></thead><tbody></tbody>
+      </table></div>
+      <div class="empty" id="cxEntriesEmpty" hidden>nenhuma entrada aberta com esses efeitos</div>
+    </div>
   </div>
 
   <h2 id="secCraft" class="sec" data-sec="craft" title="clique pra expandir/recolher">Oportunidade Compra/Venda <span class="secn mut"></span></h2>
@@ -526,6 +563,7 @@ function render(){
   renderOpen(s.positions);
   renderStock(s.stock);
   renderCraft(s.craft);
+  renderCodex(s.codex);
   renderBoss(s.boss);
   renderAttrs(s.attr_values);
   renderWatch(s.watches || [], s.meta.watch_alert_seconds || 300);
@@ -555,7 +593,7 @@ function secIsOpen(id){
     return secUser.open ?? openPos(ps).length > 0;
   }
   if(id === "stock") return secUser.stock ?? stockPos(ps).length > 0;
-  if(id === "boss") return secUser.boss ?? !!(STATE && STATE.boss && STATE.boss.summary.good > 0);
+  if(id === "codex") return secUser.codex ?? !!(STATE && STATE.codex && STATE.codex.available);
   if(id === "craft") return secUser.craft ?? (((STATE && STATE.craft && STATE.craft.rows) || []).length > 0);
   return secUser[id] ?? false;
 }
@@ -564,7 +602,7 @@ function applySecs(){
   const n = {open: openPos(ps).length,
              stock: stockPos(ps).length,
              craft: ((STATE && STATE.craft && STATE.craft.rows) || []).length,
-             boss: (STATE && STATE.boss) ? STATE.boss.summary.good : null,
+             codex: (STATE && STATE.codex && STATE.codex.available) ? STATE.codex.summary.good_lots : null,
              done: ps.filter(p => ["sold", "lost", "used"].includes(p.state)).length,
              hist: HIST ? HIST.total : null};
   document.querySelectorAll("h2.sec").forEach(h => {
@@ -577,7 +615,7 @@ function applySecs(){
                stack: opps.filter(o => o.kind === "stack").length,
                gold: opps.filter(o => o.kind === "gold").length, open: n.open, stock: n.stock,
                craft: ((STATE && STATE.craft && STATE.craft.rows) || []).length,
-               boss: (STATE && STATE.boss) ? STATE.boss.summary.good : 0,
+               codex: (STATE && STATE.codex && STATE.codex.available) ? STATE.codex.summary.good_lots : 0,
                watch: ((STATE && STATE.watches) || []).filter(w => w.status === "active").length,
                bounty: ((STATE && STATE.bounties) || []).reduce((a, b) => a + (b.good_count || 0), 0)};
   document.querySelectorAll("[data-cnt]").forEach(el => { el.textContent = cnt[el.dataset.cnt] || ""; });
@@ -1358,6 +1396,74 @@ function renderAttrs(a){
   <div class="mut" style="font-size:11px;margin-top:8px">Ajustado em ${a.n} vendas de ${a.groups} itens (nome + raridade). Ex.: um item de 25 coins ganha Exp nível 1 e Crit Damage: ≈ 25 × ${(x("Exp") * x("Crit Damage")).toFixed(2)} (se o item sem atributo está no piso, isso é um teto).</div>`;
 }
 
+function cxLot(l, fair){
+  const watching = (STATE.watches || []).some(w => w.auction_id === l.auction_id);
+  const max = Math.max(l.price + 1, Math.round((fair || 0) * l.qty * 0.75));
+  return `<div style="margin-bottom:4px"><strong>${fmt(l.qty)}×</strong> por ${fmt(l.price)} <span class="mut">(${(+l.unit).toPrecision(2)}/un)</span>`
+    + (l.discount != null ? ` <span class="${l.good ? "pos" : "mut"}">${l.discount >= 0 ? "-" : "+"}${Math.abs(Math.round(l.discount * 100))}%</span>` : "")
+    + ` <span class="mut" style="font-size:10px">#${l.auction_id} · ${l.bids} lances · fecha <span data-cd="${l.ends_at}">${secsTxt(l.secs_left)}</span>${l.early ? " · preço de largada, ainda pode subir" : ""} · cobre ${Math.round(l.covers * 100)}%</span> `
+    + `<button data-bid="${l.auction_id}" data-max="${max}">Dar lance</button> `
+    + (watching ? `<button class="ghost" disabled>✓ acompanhando</button>` : `<button class="ghost" data-addwatch="${l.auction_id}">acompanhar</button>`)
+    + `</div>`;
+}
+function renderCodex(c){
+  if(!c) return;
+  $("#cxLocked").checked = !!c.include_locked;
+  const btn = $("#cxRefresh");
+  btn.disabled = !c.can_refresh || !!c.refreshing;
+  btn.textContent = c.refreshing ? "Lendo o Codex..." : "Atualizar Codex";
+  btn.title = c.can_refresh ? "o bot lê o Codex da sua conta no jogo (só leitura) - precisa do jogo aberto"
+                            : "só funciona com o market aberto pelo bot (ele que lê o Codex no jogo)";
+  $("#cxPrio").innerHTML = `<span class="mut" style="font-size:12px">Priorizar efeito:</span> ` + (c.attrs || []).map(([k, label]) =>
+    `<button class="ghost cxp${(c.prio || []).includes(k) ? " on" : ""}" data-cxp="${k}">${label}</button>`).join("");
+  if(!c.available){
+    $("#cxStatus").innerHTML = c.refreshing ? "lendo o Codex no jogo..." :
+      `Codex ainda não mapeado. O bot lê o Codex da conta quando você abre o market com o jogo aberto${c.can_refresh ? " - ou clique em <strong>Atualizar Codex</strong>" : " (rodando o market sozinho não dá: precisa do bot)"}.`;
+    $("#cxCards").innerHTML = ""; $("#cxBody").hidden = true;
+    return;
+  }
+  $("#cxBody").hidden = false;
+  const s = c.summary, age = Math.max(0, Math.round((Date.now() - (c.read_at || 0)) / 60000));
+  $("#cxStatus").textContent = (c.refreshing ? "lendo o Codex no jogo... · " : "")
+    + `mapeado há ${age < 60 ? age + " min" : Math.round(age / 60) + " h"} · ${s.total} entradas lidas (${s.done} concluídas, ${s.open} abertas, ${s.locked} bloqueadas)`;
+  $("#cxCards").innerHTML = `<div class="pnl-grid" style="margin-top:8px">
+    ${card("Entradas consideradas", s.considered, "", (c.prio || []).length ? "com os efeitos escolhidos" : "todas as abertas")}
+    ${card("Prontas pra entregar", s.deliver_now, s.deliver_now ? "pos" : "", "já tem tudo nas bags")}
+    ${card("Itens à venda agora", `${s.items_with_lots}/${s.items}`, "", "dos que faltam nas entradas")}
+    ${card("Lotes com desconto", s.good_lots, s.good_lots ? "pos" : "", "abaixo do preço justo")}
+  </div>`;
+
+  const ib = $("#cxItems tbody"); ib.innerHTML = "";
+  $("#cxItemsEmpty").hidden = c.items.some(i => i.lots_n);
+  for(const i of c.items){
+    const tr = document.createElement("tr");
+    if(i.good_n) tr.className = "t-excelente";
+    tr.innerHTML = `
+      <td><strong>${i.item}</strong> ${copyBtn(i.item)}</td>
+      <td class="num">${fmt(i.missing)}<div class="mut" style="font-size:10px" title="${esc(i.entries.join(" · "))}">${i.entries_n} entrada(s)</div></td>
+      <td class="num">${i.fair == null ? `<span class="mut">sem histórico</span>` : `${(+i.fair).toPrecision(2)}<div class="mut" style="font-size:10px">n${i.n} · ${i.per_day}/dia</div>`}</td>
+      <td>${i.lots.length ? i.lots.map(l => cxLot(l, i.fair)).join("") + (i.lots_n > i.lots.length ? `<div class="mut" style="font-size:10px">+${i.lots_n - i.lots.length} lote(s)</div>` : "") : `<span class="mut">nenhum leilão agora</span>`}</td>`;
+    ib.appendChild(tr);
+  }
+
+  const eb = $("#cxEntries tbody"); eb.innerHTML = "";
+  $("#cxEntriesEmpty").hidden = c.entries.length > 0;
+  for(const e of c.entries){
+    const reqs = e.deliver_now ? `<span class="pos">tudo nas bags - é só entregar</span>` : e.reqs.slice(0, 6).map(r =>
+      `<div><strong>${fmt(r.missing)}×</strong> ${r.item} <span class="${r.cost == null ? "mut" : r.covered ? "pos" : "warn-t"}" style="font-size:11px">${r.cost == null ? "sem preço" : "≈" + fmt(r.cost) + "c"}</span>`
+      + `<span class="mut" style="font-size:10px"> · ${r.lots_n ? r.lots_n + " lote(s)" + (r.covered ? "" : ", não cobre tudo") : "sem lote agora"}</span></div>`).join("")
+      + (e.reqs.length > 6 ? `<div class="mut" style="font-size:10px">+${e.reqs.length - 6} itens</div>` : "");
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${e.name} <span class="tag">${e.cat === "boss" ? "boss" : "hunt"}</span>${e.status === "locked" ? ` <span class="tag" title="o degrau precisa ser desbloqueado com gold antes de aceitar entregas">🔒 ${e.unlock_cost ? fmt(e.unlock_cost) + " gold" : "bloqueada"}</span>` : ""}</td>
+      <td style="font-size:12px">${(e.bonus_text || "-").replace(/ · /g, "<br>")}${e.prio_hit.length ? `<div class="pos" style="font-size:11px">★ ${e.prio_hit.join(", ")}</div>` : ""}</td>
+      <td class="num">${Math.round(e.progress)}%<div class="cxbar"><i style="width:${Math.min(100, e.progress)}%"></i></div></td>
+      <td style="font-size:12px">${reqs}</td>
+      <td class="num">${e.deliver_now ? "-" : `<strong>${fmt(e.cost)}</strong>${e.unpriced ? `<div class="warn-t" style="font-size:10px">+${e.unpriced} sem preço</div>` : ""}${e.covered_all ? `<div class="pos" style="font-size:10px">dá pra comprar tudo agora</div>` : ""}`}</td>`;
+    eb.appendChild(tr);
+  }
+}
+
 function renderBoss(b){
   if(!b) return;
   const s = b.summary, c = b.cfg;
@@ -1368,6 +1474,8 @@ function renderBoss(b){
     ${card("Arbitragem", ST[0], ST[1], s.pct_below == null ? "" : `${Math.round(s.pct_below * 100)}% dos últimos fechamentos custaram menos de ${c.addon}`)}
     ${card("Vale tentar agora", s.good, s.good ? "pos" : "", `${s.good > b.rows.length ? `mostrando os ${b.rows.length} que encerram primeiro · ` : ""}${b.n_active} leilões ativos`)}
   </div>`;
+  $("#bossSum").textContent = `${s.good} vale tentar · arbitragem ${ST[0]}`;
+  if(s.good > 0 && !renderBoss.opened){ renderBoss.opened = true; $("#bossBox").open = true; }
   const hm = ms => new Date(ms).toLocaleTimeString("pt-BR", {hour: "2-digit", minute: "2-digit"});
   const V = {good: ["vale tentar até o teto", "pos"]};
   const tb = $("#bossTable tbody"); tb.innerHTML = "";
@@ -1761,6 +1869,14 @@ document.addEventListener("click", async e => {
       catch(e){ $("#wNote").textContent = "erro: "+e.message; }
       return;
     }
+    else if(b.dataset.cxp){
+      const cur = new Set((STATE.codex && STATE.codex.prio) || []);
+      cur.has(b.dataset.cxp) ? cur.delete(b.dataset.cxp) : cur.add(b.dataset.cxp);
+      await api("POST", "/api/settings", {codex_prio: [...cur]});
+    }
+    else if(b.id === "cxRefresh"){
+      try{ await api("POST", "/api/codex/refresh"); }catch(err){ alert("Codex: " + err.message); }
+    }
     else if(b.dataset.addwatch){
       try{ await api("POST","/api/watch",{auction_id:+b.dataset.addwatch}); b.textContent="✓ acompanhando"; b.disabled=true; load(); }
       catch(e){ alert("erro: "+e.message); }
@@ -1793,6 +1909,10 @@ document.addEventListener("click", async e => {
   }catch(err){ alert("erro: "+err.message); }
 });
 
+$("#cxLocked").onchange = async e => {
+  await api("POST", "/api/settings", {codex_locked: e.target.checked});
+  load();
+};
 $("#scanBtn").onclick = async () => {
   $("#scanBtn").textContent = "varrendo...";
   try{ await api("POST","/api/scan"); }catch(e){}

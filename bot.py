@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.15.0"
+VERSION = "4.16.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1948,6 +1948,129 @@ def fetch_codex_campaign_data(log=print):
     with sync_playwright() as playwright:
         page = connect_game_page(playwright)
         return read_codex_campaign_data(page, log)
+
+
+# ---------- Mapa do Codex pro market ----------
+# O market (market/codex.py) cruza o que FALTA entregar no Codex da conta com
+# os leiloes de empilhaveis. So' o bot enxerga o Codex (precisa do jogo
+# logado), entao ele le as entradas - recompensa, status e requisitos
+# 'tem/precisa' de cada item - e grava um JSON ao lado do banco do market.
+# So' le (nunca entrega nem desbloqueia nada). Equipamento fica de fora: os
+# requisitos dele sao pecas (nao empilhaveis).
+CODEX_PROGRESS_TABS = (("Hunts", "hunt"), ("Bosses", "boss"))
+
+CODEX_PROGRESS_JS = """() => Array.from(document.querySelectorAll('.cx-list .cx-entry')).map(e => {
+    const nameEl = e.querySelector('.cx-entry-name');
+    const bar = e.querySelector('.cx-bar-fill');
+    const btn = e.querySelector('.cx-entry-side button.cx-give');
+    const m = ((bar && bar.getAttribute('style')) || '').match(/width:\\s*([\\d.]+)%/);
+    const btnText = btn ? btn.textContent.trim() : '';
+    const unlock = /^Desbloquear/i.test(btnText);
+    return {
+        name: ((nameEl && (nameEl.getAttribute('title') || nameEl.textContent)) || '').trim(),
+        slug: (e.querySelector('.cx-entry-num') && e.querySelector('.cx-entry-num').getAttribute('title')) || '',
+        bonus_text: ((e.querySelector('.cx-entry-bonus') || {}).textContent || '').trim(),
+        progress: m ? parseFloat(m[1]) : 0,
+        done: e.classList.contains('done'),
+        locked: unlock || !!(nameEl && nameEl.querySelector('svg')),
+        unlock_text: unlock ? btnText : '',
+        tiles: Array.from(e.querySelectorAll('.cx-tiles .cx-tile')).map(t => ({
+            label: t.getAttribute('aria-label') || '',
+            ready: ((t.querySelector('.cx-tile-rdy') || {}).textContent || '').trim(),
+        })),
+    };
+})"""
+
+# aria-label de cada requisito: '<item>[\n...] <tem>/<precisa>' (numeros no
+# formato pt-BR, ex. '1.900/1.900'); o tem ja vem limitado ao precisa.
+CODEX_TILE_RE = re.compile(r"^(?P<text>.*?)\s+(?P<have>[\d.]+)/(?P<need>[\d.]+)\s*$", re.S)
+
+
+def digits_to_int(text):
+    digits = re.sub(r"\D", "", text or "")
+    return int(digits) if digits else 0
+
+
+def parse_codex_tile(tile):
+    """{'label': 'diabolic skull 120/275', 'ready': '+40'} ->
+    {'item': 'diabolic skull', 'need': 275, 'have': 120, 'ready': 40} ('ready'
+    = o que ja esta nas suas bags e a entrega consome). None se nao der."""
+    match = CODEX_TILE_RE.match((tile.get("label") or "").strip())
+    if not match:
+        return None
+    first_line = match.group("text").strip().split("\n")[0].strip()
+    # tira o que o jogo acrescenta ao nome: ' (Epico)', ' +3'
+    item = re.sub(r"(\s+\([^)]*\)|\s+\+\d+)+$", "", first_line).strip().lower()
+    need = digits_to_int(match.group("need"))
+    if not item or not need:
+        return None
+    return {"item": item, "need": need, "have": min(digits_to_int(match.group("have")), need),
+            "ready": digits_to_int(tile.get("ready"))}
+
+
+def build_progress_entry(raw, cat):
+    entry = build_codex_entry(raw)
+    entry["cat"] = cat
+    entry["reqs"] = [r for r in (parse_codex_tile(t) for t in raw.get("tiles") or []) if r]
+    return entry
+
+
+def read_codex_tab_progress(page, cat):
+    """Aba ja aberta e com os filtros desligados: le todas as paginas."""
+    page.select_option(".cx-attr", "", timeout=3000)
+    page.wait_for_timeout(700)
+    entries, seen = [], set()
+    for _ in range(40):
+        for raw in page.evaluate(CODEX_PROGRESS_JS):
+            if raw["name"] and raw["name"] not in seen:
+                seen.add(raw["name"])
+                entries.append(build_progress_entry(raw, cat))
+        if not click_codex_pager_button(page, 2):  # 2 = 'proxima'
+            break
+        page.wait_for_timeout(450)
+    try:  # voltar pra 1a pagina e' so' arrumacao
+        click_codex_pager_button(page, 0)
+    except Exception:
+        pass
+    return entries
+
+
+def read_codex_progress(page, log):
+    """Le o Codex da conta (Hunts + Bosses) numa pagina ja conectada. Mesmo
+    cuidado da Campanha: 'codex_hunts_view' desliga os filtros que escondem
+    entradas e devolve tudo como estava ao sair."""
+    entries = []
+    with codex_hunts_view(page, log):
+        for label, cat in CODEX_PROGRESS_TABS:
+            if label != "Hunts":
+                page.click(f'.codex-side .codex-tab:has-text("{label}")', timeout=3000)
+                search = page.query_selector(".cx-search")
+                if search is not None and (search.input_value() or ""):
+                    search.fill("", timeout=3000)
+                page.wait_for_timeout(500)
+            entries.extend(read_codex_tab_progress(page, cat))
+    opened = sum(1 for e in entries if e["status"] == "open")
+    log(f"  Codex mapeado pro market: {len(entries)} entradas ({opened} abertas).")
+    return {"version": 1, "source": "bot", "read_at": int(time.time() * 1000), "entries": entries}
+
+
+def fetch_codex_progress(log=print):
+    """Com o bot PARADO: conecta no navegador (abrindo se precisar) e le o
+    Codex. Com o bot rodando use 'request_from_bot(read_codex_progress)'."""
+    if not launch_browser(log):
+        return None
+    with sync_playwright() as playwright:
+        page = connect_game_page(playwright)
+        return read_codex_progress(page, log)
+
+
+def save_codex_progress(payload, path):
+    """Grava o JSON de forma atomica (o market pode estar lendo)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 # Pedido de atualizacao da lista da Campanha feito pela GUI com o bot rodando:

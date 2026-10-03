@@ -80,6 +80,7 @@ jobs:
           mkdir -p dist/market
           rsync -a --exclude 'market.db*' --exclude 'backups' --exclude 'chrome_profile' \
             --exclude 'config.json' --exclude '__pycache__' \
+            --exclude 'codex_progress.json*' \
             --exclude 'handoff-baiak-market-alert.pdf' \
             market/ dist/market/
 

@@ -25,6 +25,8 @@ market/market.db-wal
 market/backups/
 market/chrome_profile/
 market/config.json
+market/codex_progress.json
+market/codex_progress.json.tmp
 market/__pycache__/
 market/handoff-baiak-market-alert.pdf
 

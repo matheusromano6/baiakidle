@@ -310,7 +310,9 @@ histórico não mostra lucro de revenda neles. O que já está no log de anális
 antes dessa mudança ficou com o justo antigo. Não se aplica a lote, gold nem a
 "Procurar por oferta".
 
-**Boss Token** (seção própria + link no navbar; `analyze.boss_monitor`): na loja
+**Boss Token** (bloco recolhível **dentro de Oportunidades - Lote (empilháveis)**,
+porque boss token é um empilhável - não tem mais seção nem atalho próprio no
+navbar; `analyze.boss_monitor`): na loja
 (Comércio > Mercador > Boss Collector > Cosmetics > Addon Casket) **500 boss
 tokens = 1 addon**, que custa **50 coins** - então cada token vale **0,10 coin
 de uso** (o casket não é revendável; sem limite de compra). Lote de token que
@@ -335,6 +337,44 @@ do addon: **aberta** (< 80%), **apertada** (< 100%) ou **fechada**; a tabela por
 atualização foi pra ~60, com ~6 lances). Usa o snapshot da varredura (2 min), sem
 requisições extras. Config: `boss_token_name`, `boss_tokens_per_addon`,
 `boss_addon_coins`, `boss_min_margin`, `boss_min_ev`, `boss_show_n`, `boss_leftover_credit`, `boss_recent_n`.
+
+**Codex x Market** (seção própria + atalho "Codex" no navbar; `codex.py`): o Codex
+da conta tem 686 entradas (hunts, bosses e equipamento), cada uma pedindo itens
+em quantidade (os degraus II e III de uma hunt pedem 5x e 15x o do degrau I).
+Muita coisa que falta é empilhável barato no market - muitas vezes sai mais
+rápido comprar o lote do que ficar na hunt. Como só o bot enxerga o Codex
+(precisa do jogo logado), o fluxo é: **ao abrir o market** o bot lê o Codex da
+conta - **só leitura, nunca entrega nem desbloqueia nada** - e grava
+`codex_progress.json` ao lado do banco (cada entrada com recompensa, status,
+progresso e os requisitos `tem/precisa`, já descontando o que está nas suas
+bags); o market lê esse arquivo e cruza com os leilões de empilháveis ativos e o
+histórico de preço. A leitura automática ao abrir só acontece se o jogo já está
+aberto (bot rodando ou navegador com depuração) e se o último mapa tem mais de
+10 min - ela **nunca abre o navegador sozinha**; o botão **Atualizar Codex** do
+painel ignora esse intervalo (só funciona com o market aberto pelo bot - rodando
+o `server.py` sozinho a seção avisa que precisa do bot). Hunts e bosses são
+lidos; equipamento fica de fora (os requisitos dele são peças, não empilháveis).
+A seção tem:
+- **Priorizar efeito**: chips com os efeitos da recompensa (Dano crítico,
+  Onslaught, Chance de crítico, Ataque, Dano de magia...). Sem nenhum marcado
+  mostra todas as entradas abertas; marcando, só entram as entradas que dão
+  aquele efeito. A escolha fica salva.
+- **O que comprar no market**: lista de compras somada nas entradas escolhidas -
+  por item, quanto falta, o preço justo por unidade, e os leilões de agora (qtd,
+  preço, desconto vs o justo, quanto da necessidade o lote cobre, quando fecha)
+  com **Dar lance** e **acompanhar**. Leilão novo começa no piso de 25 coins, então
+  o aviso "preço de largada, ainda pode subir" aparece enquanto faltar mais que
+  `alert_window_seconds`.
+- **Entradas abertas**: por entrada, a recompensa (efeito priorizado marcado com
+  ★), o progresso e o que falta de cada item com o custo **pelos lotes reais**
+  (cada lote tem piso de 25 coins; leilão novo usa o preço típico, nunca abaixo
+  do atual), mais baratas de fechar primeiro. "Incluir entradas bloqueadas"
+  traz os degraus que ainda precisam de gold pra desbloquear (mostra o preço).
+Config: `codex_days` (14, janela do preço justo), `codex_max_entries` e
+`codex_max_items` (40 cada, o que a seção lista). O arquivo `codex_progress.json`
+é pessoal (fica fora do git, do zip de compartilhamento e do artefato do Mac).
+O item que o Codex pede e o market vende têm o mesmo nome; item sem histórico
+suficiente (menos de `min_sales_loose` vendas) aparece como "sem preço".
 
 **Avaliar item** (seção própria + link "Avaliar" no navbar): informe o **nº de um
 leilão** (aceita `#359654`) e o sistema decompõe o valor pelas especificações

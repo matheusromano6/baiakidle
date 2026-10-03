@@ -20,6 +20,11 @@ from potion_picker import PotionPicker
 
 MAX_LOG_LINES = 500
 LOG_DIR = os.path.join(bot.data_dir(), "logs")
+# Ao abrir o market o Codex da conta e' mapeado pra ele cruzar com os leiloes
+# (market/codex.py), mas no maximo 1x a cada tanto: reabrir o painel varias
+# vezes nao fica mexendo no Codex do jogo toda hora (o botao 'Atualizar Codex'
+# do painel ignora esse intervalo).
+CODEX_AUTO_SYNC_MIN_SECONDS = 10 * 60
 
 # painel de mercado (market/server.py) roda junto do bot, na mesma janela -
 # antes eram 2 processos separados que o usuario tinha que abrir na mao cada
@@ -97,6 +102,7 @@ class BotGUI:
         self.hunt_confirm_window = None
 
         self.market_url = None
+        self.codex_sync_lock = threading.Lock()
         self.start_market_server()
 
         self.build_header()
@@ -593,6 +599,11 @@ class BotGUI:
         try:
             _, url = market_server.start_server(open_browser=False)
             self.market_url = url
+            try:
+                import codex as market_codex
+                market_codex.set_refresher(lambda: self.sync_codex_for_market(automatic=False))
+            except Exception as error:
+                self.log(f"Mapa do Codex indisponivel no painel de mercado: {error}")
         except OSError:
             port = market_server.CFG.get("http_port", 8787)
             self.market_url = f"http://127.0.0.1:{port}/"
@@ -644,12 +655,54 @@ class BotGUI:
             text_color="#04140a",
         ).pack(padx=20, pady=16, fill="x")
 
+    def sync_codex_for_market(self, automatic=False):
+        """Le o Codex da conta (so' le, nunca entrega nada) e grava o mapa pro
+        market cruzar o que falta com os leiloes de empilhaveis. Bloqueia ate
+        acabar - chame de uma thread. Com o bot rodando, a leitura e' feita na
+        thread dele (mexer no Codex numa segunda conexao briga com as rotinas).
+
+        automatic=True (ao abrir o market): so' le se o jogo ja esta aberto
+        (bot rodando ou navegador com depuracao ligada) e se o ultimo mapa tem
+        mais de CODEX_AUTO_SYNC_MIN_SECONDS - nunca abre o navegador sozinho."""
+        if not self.codex_sync_lock.acquire(blocking=False):
+            return  # ja tem uma leitura em andamento
+        try:
+            import codex as market_codex
+            import server as market_server
+            path = market_codex.progress_path(market_server.CFG)
+            bot_running = self.thread is not None and self.thread.is_alive()
+            if automatic:
+                if not bot_running and not bot.is_debug_port_open():
+                    self.log("Codex nao mapeado pro market: abra o jogo (ou inicie o bot) e use 'Atualizar Codex' no painel.")
+                    return
+                try:
+                    if time.time() - os.path.getmtime(path) < CODEX_AUTO_SYNC_MIN_SECONDS:
+                        return
+                except OSError:
+                    pass
+            self.log("Mapeando o Codex da conta pro market...")
+            if bot_running:
+                data = bot.request_from_bot(bot.read_codex_progress, timeout=240)
+            else:
+                data = bot.fetch_codex_progress(log=self.log)
+            if data and data.get("entries"):
+                bot.save_codex_progress(data, path)
+            else:
+                self.log("  Nao consegui ler o Codex pro market - mantendo o ultimo mapa salvo.")
+        except Exception as error:
+            self.log(f"  Erro ao mapear o Codex pro market: {error}")
+        finally:
+            self.codex_sync_lock.release()
+
     def _open_market_dashboard(self):
         try:
             import server as market_server
             market_server.open_dashboard(self.market_url)
         except Exception as error:
             self.log(f"Erro ao abrir o painel de mercado: {error}")
+        # "quando abrir o market, mapear o Codex" - em segundo plano, o painel
+        # mostra o resultado assim que o arquivo aparecer
+        threading.Thread(target=lambda: self.sync_codex_for_market(automatic=True), daemon=True).start()
 
     def _refresh_sound_button(self):
         enabled = bot.SOUND_MEMORY.get("enabled", True)
