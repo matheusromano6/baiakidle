@@ -567,6 +567,39 @@ veja o `chat_id` em `https://api.telegram.org/bot<TOKEN>/getUpdates`.
 Posições e vendas nunca são apagadas pelo sistema. Testes usam um banco
 separado (`BAIAK_DB=market.test.db python server.py`).
 
+## Desenvolvimento: alinhamento com o bot
+
+O `market/` é parte do produto "bot" (mesmo repositório, mesma versão): ele roda
+embutido no bot e **só chega aos outros PCs/Macs numa release nova** (bump de
+`bot.VERSION` + build + release no GitHub). O passo a passo completo e o
+protocolo de alinhamento entre as conversas de desenvolvimento (Bot e Market)
+estão no **`RELEASING.md`**, na raiz do repositório (não vai no build).
+
+Quem mexe em quê:
+
+| área | dona |
+|---|---|
+| `market/*` (código, dashboard, scanner, api, store) | Market |
+| leitura do Codex pro market (`read_codex_progress` e afins no `bot.py`) | Market, usando os helpers do Bot |
+| `gui.py`, rotinas, Campanha de Codex, Poções, atualizador | Bot |
+| `build.bat`, `build-macos.yml`, `make_share_zip.py`, `.gitignore`, `RELEASING.md` | compartilhado: mudou, avise a outra conversa |
+
+O essencial ao mexer aqui:
+
+- **Arquivo novo de dados/pessoal** no `market/`: entra nas TRÊS listas de exclusão
+  (`.gitignore`, `MARKET_EXCLUDE_NAMES` em `make_share_zip.py` e o `--exclude` do rsync
+  em `build-macos.yml`). Nunca vai no build: `market.db*`, `backups/`, `chrome_profile/`,
+  `config.json`, `codex_progress.json*`.
+- **Módulo novo importado pelo market** (stdlib ou pacote): `--hidden-import` em
+  `build.bat` e `build-macos.yml` - o PyInstaller não enxerga os imports do market
+  (carregado em runtime).
+- **Helpers compartilhados do `bot.py`** (`open_codex`, `codex_hunts_view`,
+  `read_codex_hunt_entries`, `build_codex_entry`, `request_from_bot`, `load_state`):
+  não mude o comportamento sem checar quem usa; prefira adicionar função nova.
+  Os filtros do Codex ficam sempre ligados ao terminar de ler.
+- Ao fechar uma mudança relevante, escreva a **nota de handoff** do `RELEASING.md`
+  pro usuário levar à outra conversa.
+
 ## Limitações
 
 - Histórico da API é só ~7 dias - deixar o `server.py`/`watch` rodando
