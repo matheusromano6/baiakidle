@@ -12,6 +12,7 @@ routines.json
 routines_opera.json
 settings.json
 settings_opera.json
+*.state.json
 
 # painel de mercado - o CODIGO agora vai junto no build compartilhado (roda
 # sozinho em qualquer PC/Mac que receber o bot), mas os dados de verdade

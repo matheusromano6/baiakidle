@@ -16,6 +16,7 @@ from attribute_picker import AttributePicker
 from build_config_picker import BuildConfigPicker
 from hunt_picker import HuntPicker
 from codex_campaign_picker import CodexCampaignPicker
+from potion_picker import PotionPicker
 
 MAX_LOG_LINES = 500
 LOG_DIR = os.path.join(bot.data_dir(), "logs")
@@ -749,6 +750,45 @@ class BotGUI:
             on_refresh=on_refresh,
         )
 
+    def open_potion_picker(self):
+        def on_saved(config):
+            self.settings["potions"] = config
+            bot.save_settings(self.settings)
+            marked = sum(1 for v in config["items"].values() if v["use_qty"] > 0 or v["buy_daily"])
+            self.log(f"Poções salvas ({marked} tipo(s) configurado(s); uso nos chefes {'ligado' if config['use_in_bosses'] else 'desligado'}).")
+            self.rebuild_routine_rows()
+
+        def on_refresh(callback):
+            def worker():
+                info = None
+                try:
+                    if self.thread is not None and self.thread.is_alive():
+                        info = bot.request_from_bot(bot.read_potion_info)  # o bot rodando atende na propria thread
+                    else:
+                        info = bot.fetch_potion_info(log=self.log)
+                except Exception as error:
+                    self.log(f"  Erro ao ler o Mercador: {error}")
+                if info and info.get("potions"):
+                    self.settings["potion_catalog"] = info["potions"]
+                    self.settings["potion_stock"] = info["stock"]
+                    bot.save_settings(self.settings)
+                    callback(info["potions"], info["stock"])
+                else:
+                    self.log("  Nao consegui ler o Mercador - mantendo a lista salva.")
+                    callback(None, None)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        PotionPicker(
+            self.root,
+            self.settings.get("potion_catalog") or bot.POTION_CATALOG_DEFAULT,
+            self.settings.get("potion_stock") or {},
+            bot.potion_config(),
+            bot.boss_potion_suggestion(),
+            on_saved=on_saved,
+            on_refresh=on_refresh,
+        )
+
     def build_status_panel(self):
         ctk.CTkLabel(self.root, text="STATUS", font=theme.FONT_HEADER, text_color=theme.MUTED).pack(
             anchor="w", padx=20
@@ -1133,6 +1173,19 @@ class BotGUI:
                         self.root, step.get("bosses", []), on_saved=on_saved,
                         kills=bot.BOSS_KILLS_MEMORY, on_refresh=on_refresh,
                     )
+
+                potion_items = bot.potion_config()["items"]
+                potion_count = sum(1 for v in potion_items.values() if v["use_qty"] > 0 or v["buy_daily"])
+                ctk.CTkButton(
+                    row,
+                    text=f"Poções ({potion_count})",
+                    width=90,
+                    fg_color=theme.PANEL_ALT,
+                    hover_color=theme.BORDER,
+                    text_color=theme.MUTED,
+                    font=theme.FONT_BODY,
+                    command=self.open_potion_picker,
+                ).pack(side="right", padx=4)
 
                 enabled_count = sum(1 for b in step.get("bosses", []) if b.get("enabled"))
                 ctk.CTkButton(

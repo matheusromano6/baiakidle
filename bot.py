@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.14.3"
+VERSION = "4.15.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -884,6 +884,17 @@ DEFAULT_ROUTINES = [
         ],
     },
     {
+        # compra diaria de pocoes de boost (estoque pras sequencias de chefes):
+        # so' age nas pocoes que o usuario marcou 'comprar 1 por dia' na tela
+        # de Pocoes - sem nada marcado nao toca no jogo.
+        "id": "pocoes_estoque",
+        "name": "Pocoes: compra diaria",
+        "enabled": True,
+        "skip_when_training": True,
+        "trigger": {"mode": "interval", "seconds": 600},
+        "steps": [{"type": "dom_potion_stock"}],
+    },
+    {
         # As tasks da guild resetam toda vez que o jogo libera novas (Diarias,
         # todo dia as 00:00) - em vez de agendar um horario fixo (ex: 00:30),
         # esta rotina fica de olho continuamente (a cada 30s) e ja aceita
@@ -1193,6 +1204,18 @@ def _ensure_campaign_routine(routines):
     return True
 
 
+def _ensure_potion_routine(routines):
+    """Um 'routines.json' salvo antes das Pocoes existirem ganha a rotina de
+    compra diaria (ligada, mas inerte ate' o usuario marcar algo) logo apos
+    'Enfrentar Chefes'. Retorna True se adicionou."""
+    if any(r.get("id") == "pocoes_estoque" for r in routines):
+        return False
+    template = next(r for r in DEFAULT_ROUTINES if r["id"] == "pocoes_estoque")
+    position = next((i + 1 for i, r in enumerate(routines) if r.get("id") == "enfrentar_chefes"), len(routines))
+    routines.insert(position, json.loads(json.dumps(template)))
+    return True
+
+
 def load_routines():
     path = routines_path()
     if not os.path.exists(path):
@@ -1201,6 +1224,7 @@ def load_routines():
         routines = json.load(file)
     changed = _ensure_mandatory_vender_loot_steps(routines)
     changed = _ensure_campaign_routine(routines) or changed
+    changed = _ensure_potion_routine(routines) or changed
     if changed:
         save_routines(routines)
     return routines
@@ -1233,6 +1257,27 @@ def load_settings():
 def save_settings(settings):
     with open(settings_path(), "w", encoding="utf-8") as file:
         json.dump(settings, file, ensure_ascii=False, indent=2)
+
+
+def state_path():
+    return settings_path()[: -len(".json")] + ".state.json"
+
+
+def load_state():
+    """Dados que o PROPRIO BOT grava enquanto roda (ex: dia da ultima compra
+    de cada pocao, tempos das sequencias de chefes) - arquivo separado do
+    settings.json porque a GUI regrava o settings.json inteiro a partir da
+    copia que ela tem em memoria, o que apagaria o que o bot gravou ali."""
+    try:
+        with open(state_path(), "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    with open(state_path(), "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
 
 
 def connect_game_page(playwright):
@@ -2179,6 +2224,417 @@ def execute_dom_codex_campaign_step(page, step, log):
     return True
 
 
+# ---------- Pocoes de boost (Mercador) ----------
+# Fatos do jogo confirmados ao vivo: o Mercador (Comercio > Mercador > Pocoes)
+# vende 6 pocoes a 10kk; o limite de compra e' 1 POR TIPO POR DIA (o '+' do
+# carrinho trava na 1a unidade; reseta a meia-noite); a compra chega na
+# Caixa de entrada do Armazem (clicar na pocao manda pra mochila); na mochila,
+# clicar numa pocao USA 1 e cada uso soma +30 min de boost na conta (empilha).
+POTION_BOOST_SECONDS = 30 * 60
+POTION_CATALOG_DEFAULT = [
+    {"name": "potion of critical", "id": 62165, "price": 10000000, "desc": "+10% crit por 30 min"},
+    {"name": "potion of dodge", "id": 62166, "price": 10000000, "desc": "+8% esquiva por 30 min"},
+    {"name": "potion of fatal", "id": 62167, "price": 10000000, "desc": "+8% fatal por 30 min"},
+    {"name": "potion of momentum", "id": 62168, "price": 10000000, "desc": "+12% momentum por 30 min"},
+    {"name": "potion of speed", "id": 62169, "price": 10000000, "desc": "+15% atk speed por 30 min"},
+    {"name": "potion of transcendence", "id": 62170, "price": 10000000, "desc": "+8% avatar por 30 min"},
+]
+POTION_BUY_RETRY_SECONDS = 30 * 60
+BOSS_RUN_HISTORY_KEEP = 10
+BOSS_POTION_MARGIN = 1.15
+
+# 'active_until' (monotonic): ate quando o boost de cada pocao usada vale;
+# 'retry_after': nao tenta comprar de novo antes disso (falha/saldo).
+BOSS_POTION_MEMORY = {"active_until": {}, "retry_after": {}}
+
+# Pedido da GUI pra rodar algo NA thread do bot (que e' quem tem a conexao com
+# o jogo - mexer no Mercador/Armazem numa segunda conexao briga com as rotinas).
+BOT_CALL_REQUEST = {"fn": None, "result": None, "done": threading.Event()}
+
+
+def request_from_bot(fn, timeout=180):
+    """Pede pra thread do bot rodar 'fn(page, log)' no proximo tick e espera
+    o resultado (None se demorar demais ou falhar)."""
+    BOT_CALL_REQUEST["result"] = None
+    BOT_CALL_REQUEST["done"].clear()
+    BOT_CALL_REQUEST["fn"] = fn
+    if not BOT_CALL_REQUEST["done"].wait(timeout):
+        BOT_CALL_REQUEST["fn"] = None
+        return None
+    return BOT_CALL_REQUEST["result"]
+
+
+def potion_config():
+    """Escolhas do usuario (settings.json -> 'potions'): {'use_in_bosses':
+    bool, 'items': {nome: {'use_qty': int, 'buy_daily': bool}}}. Sem nada
+    salvo = tudo desligado (nada e' comprado nem usado ate' ele salvar)."""
+    raw = load_settings().get("potions") or {}
+    items = {}
+    for name, value in (raw.get("items") or {}).items():
+        value = value or {}
+        try:
+            use_qty = max(0, int(value.get("use_qty") or 0))
+        except (TypeError, ValueError):
+            use_qty = 0
+        items[name] = {"use_qty": use_qty, "buy_daily": bool(value.get("buy_daily"))}
+    return {"use_in_bosses": bool(raw.get("use_in_bosses")), "items": items}
+
+
+def today_key():
+    return time.strftime("%Y-%m-%d")
+
+
+def boss_potion_suggestion():
+    """Sugestao de quantas pocoes por tipo cobrem a lista de chefes: media
+    dos tempos das ultimas sequencias COMPLETAS (BOSS_RUN_HISTORY) com
+    BOSS_POTION_MARGIN de folga, dividido pela duracao de cada pocao
+    (arredondado pra cima). None enquanto nao ha historico."""
+    history = load_state().get("boss_run_history") or []
+    seconds = [h["seconds"] for h in history if h.get("seconds")]
+    if not seconds:
+        return None
+    average = sum(seconds) / len(seconds)
+    needed = max(1, -(-int(average * BOSS_POTION_MARGIN) // POTION_BOOST_SECONDS))
+    return {"runs": len(seconds), "avg_minutes": average / 60, "needed": needed}
+
+
+def record_boss_run(seconds, bosses):
+    state = load_state()
+    history = state.get("boss_run_history") or []
+    history.append({"date": today_key(), "seconds": int(seconds), "bosses": bosses})
+    state["boss_run_history"] = history[-BOSS_RUN_HISTORY_KEEP:]
+    save_state(state)
+
+
+def open_merchant_potions(page):
+    """Abre Comercio > Mercador na categoria 'Pocoes'."""
+    if page.is_visible("#picker-modal"):
+        page.keyboard.press("Escape")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+    if not page.is_visible(".merchant-card"):
+        if not page.is_visible("#tab-merchant"):
+            # 'Comercio' e' um alternador - se o menu ja estava aberto, clicar
+            # de novo fecharia (o item 'Mercador' sumiria).
+            page.click("#tab-comercio", timeout=3000)
+            page.wait_for_timeout(500)
+        page.click("#tab-merchant", timeout=3000)
+        page.wait_for_selector(".merchant-card .store-sidebtn", timeout=5000)
+        page.wait_for_timeout(700)
+    back = page.locator('.merchant-card button:has-text("Voltar")')
+    if back.count() and back.first.is_visible():  # estava no Historico
+        back.first.click(timeout=3000)
+        page.wait_for_timeout(600)
+    side = page.locator('.merchant-card .store-sidebtn:has-text("Poções")').first
+    if "on" not in (side.get_attribute("class") or "").split():
+        side.click(timeout=3000)
+        page.wait_for_timeout(700)
+    page.wait_for_selector(".merchant-card .gs-row", timeout=4000)
+
+
+def close_merchant(page):
+    try:
+        if page.is_visible(".gs-cartlayer"):
+            page.locator(".gs-cartwin-close").first.click(timeout=2000)
+            page.wait_for_timeout(300)
+        page.click("#merchant-modal-close", timeout=3000)
+    except Exception:
+        page.keyboard.press("Escape")
+
+
+def read_merchant_potions(page):
+    """Dentro do Mercador/Pocoes: lista as pocoes (nome, id, descricao, preco,
+    status: 'buyable' / 'limit' (limite diario) / 'in_cart') e o saldo."""
+    raw = page.evaluate(
+        r"""() => ({
+            rows: Array.from(document.querySelectorAll('.merchant-card .gs-row')).map(r => {
+                const b = r.querySelector('.gs-buy');
+                return {
+                    name: (r.querySelector('.gs-name') || {}).textContent || '',
+                    desc: (r.querySelector('.gs-desc') || {}).textContent || '',
+                    id_text: (r.querySelector('.gs-id') || {}).textContent || '',
+                    price_text: b ? b.textContent : '',
+                    title: b ? b.title : '',
+                    disabled: b ? b.disabled : true,
+                };
+            }),
+            balance_text: (document.querySelector('.merchant-card .merchant-balances') || {}).innerText || '',
+        })"""
+    )
+    potions = []
+    for row in raw["rows"]:
+        title = (row["title"] or "").lower()
+        if not row["disabled"]:
+            status = "buyable"
+        elif "limite" in title:
+            status = "limit"
+        elif "carrinho" in title:
+            status = "in_cart"
+        else:
+            status = "unavailable"
+        id_match = re.search(r"id\s+(\d+)", row["id_text"])
+        price_digits = re.sub(r"\D", "", row["price_text"])
+        potions.append({
+            "name": row["name"].strip(), "desc": row["desc"].strip(),
+            "id": int(id_match.group(1)) if id_match else None,
+            "price": int(price_digits) if price_digits else 0, "status": status,
+        })
+    balance_match = re.search(r"[\d.]+", raw["balance_text"])
+    balance = int(balance_match.group(0).replace(".", "")) if balance_match else None
+    return {"potions": potions, "balance": balance}
+
+
+def buy_potions_now(page, names, log):
+    """Compra 1 de cada pocao em 'names' (limite do jogo: 1 por tipo por dia)
+    pelo caminho normal: preco -> carrinho -> confere o carrinho -> confirmar.
+    So' confirma se o carrinho tiver EXATAMENTE as pocoes pedidas, 1 de cada,
+    e o saldo cobrir. Confirma de verdade a compra olhando se cada pocao
+    passou a mostrar 'limite diario' depois. Retorna {'bought': [...],
+    'limit_reached': [...], 'failed': [...]}."""
+    result = {"bought": [], "limit_reached": [], "failed": []}
+    open_merchant_potions(page)
+    try:
+        data = read_merchant_potions(page)
+        by_name = {p["name"]: p for p in data["potions"]}
+        to_buy = []
+        for name in names:
+            potion = by_name.get(name)
+            if potion is None:
+                log(f"  '{name}' nao esta no Mercador.")
+                result["failed"].append(name)
+            elif potion["status"] == "limit":
+                log(f"  '{name}': limite diario de compra ja atingido hoje.")
+                result["limit_reached"].append(name)
+            elif potion["status"] == "buyable":
+                to_buy.append(potion)
+            else:
+                result["failed"].append(name)
+        if not to_buy:
+            return result
+        total = sum(p["price"] for p in to_buy)
+        if data["balance"] is not None and data["balance"] < total:
+            log(f"  Saldo insuficiente pra comprar pocoes ({format_gold(data['balance'])} < {format_gold(total)}).")
+            result["failed"].extend(p["name"] for p in to_buy)
+            return result
+
+        for potion in to_buy:
+            row = page.locator(f'.merchant-card .gs-row:has(.gs-name:text-is("{potion["name"]}"))').first
+            row.locator(".gs-buy").click(timeout=3000)
+            page.wait_for_timeout(400)
+        page.locator(".gs-cartfab").first.click(timeout=3000)
+        page.wait_for_timeout(700)
+        cart = page.evaluate(
+            r"""() => ({
+                rows: Array.from(document.querySelectorAll('.gs-cart-row')).map(r => ({
+                    name: ((r.querySelector('.gs-cart-name') || {}).textContent || '').trim(),
+                    qty: ((r.querySelector('.gs-cart-qtyval') || {}).value || '').trim(),
+                })),
+                total_text: ((document.querySelector('.gs-cart-total') || {}).innerText || ''),
+            })"""
+        )
+        cart_total = int(re.sub(r"\D", "", cart["total_text"]) or 0)
+        expected = {p["name"] for p in to_buy}
+        if (
+            {r["name"] for r in cart["rows"]} != expected
+            or any(r["qty"] != "1" for r in cart["rows"])
+            or cart_total != total
+        ):
+            log(f"  O carrinho nao confere com o pedido ({cart}) - limpando sem comprar.")
+            page.locator(".gs-cart-clear").first.click(timeout=3000)
+            result["failed"].extend(expected)
+            return result
+
+        log(f"  Comprando {len(to_buy)} pocao(oes) por {format_gold(total)}: {', '.join(sorted(expected))}...")
+        page.locator(".gs-cart-confirm").first.click(timeout=3000)
+        page.wait_for_timeout(1500)
+        try:  # o carrinho costuma fechar sozinho depois de confirmar
+            page.locator(".gs-cartwin-close").first.click(timeout=1000)
+            page.wait_for_timeout(300)
+        except Exception:
+            pass
+        after ={p["name"]: p for p in read_merchant_potions(page)["potions"]}
+        for potion in to_buy:
+            if after.get(potion["name"], {}).get("status") == "limit":
+                result["bought"].append(potion["name"])
+            else:
+                result["failed"].append(potion["name"])
+        if result["bought"]:
+            log(f"  Compra concluida: {', '.join(result['bought'])}.")
+            record_activity(f"Pocoes compradas: {', '.join(n.replace('potion of ', '') for n in result['bought'])}.")
+        if result["failed"]:
+            log(f"  Nao confirmei a compra de: {', '.join(result['failed'])}.")
+        return result
+    finally:
+        close_merchant(page)
+
+
+def collect_potions_from_inbox(page, log):
+    """Armazem > Caixa de entrada: clica em cada pocao (manda pra mochila).
+    NAO usa 'Coletar tudo' (a caixa tem milhares de itens misturados).
+    Retorna quantas pilhas coletou."""
+    if not page.is_visible(".chest-grid"):
+        if page.is_visible("#picker-modal"):
+            page.keyboard.press("Escape")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+        page.click("#tab-chest", timeout=3000)
+        page.wait_for_selector(".chest-grid", timeout=5000)
+        page.wait_for_timeout(700)
+    inbox = page.locator('.chest-side .store-sidebtn:has-text("Caixa de entrada")').first
+    if inbox.count() and "on" not in (inbox.get_attribute("class") or "").split():
+        inbox.click(timeout=3000)
+        page.wait_for_timeout(700)
+    collected = 0
+    try:
+        for _ in range(30):
+            index = page.evaluate(
+                r"""() => Array.from(document.querySelectorAll('.chest-grid:not(.chest-bag) .chest-cell.filled')).findIndex(
+                    c => /^potion of /i.test(((c.querySelector('img') || {}).alt) || ''))"""
+            )
+            if index is None or index < 0:
+                break
+            cells = page.query_selector_all(".chest-grid:not(.chest-bag) .chest-cell.filled")
+            if index >= len(cells):
+                break
+            cells[index].click(timeout=3000)
+            page.wait_for_timeout(600)
+            collected += 1
+    finally:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+    if collected:
+        log(f"  {collected} pilha(s) de pocao coletada(s) da Caixa de entrada pra mochila.")
+    return collected
+
+
+def count_backpack_potions(page):
+    """{nome: quantidade} das pocoes de boost na mochila (so' le o HUD)."""
+    return page.evaluate(
+        r"""() => {
+            const out = {};
+            for (const c of document.querySelectorAll('#backpack-grid .cell.buffpot')) {
+                const name = ((c.querySelector('img') || {}).alt) || '';
+                const qty = parseInt(((c.querySelector('.qty') || {}).textContent || '1').replace(/\D/g, ''), 10) || 1;
+                if (name) out[name] = (out[name] || 0) + qty;
+            }
+            return out;
+        }"""
+    )
+
+
+def use_potion(page, name, quantity, log):
+    """Clica na pocao da mochila 'quantity' vezes (cada clique usa 1 e soma
+    +30 min de boost). Retorna quantas usou de verdade."""
+    used = 0
+    for _ in range(quantity):
+        index = page.evaluate(
+            r"""(wanted) => Array.from(document.querySelectorAll('#backpack-grid .cell.buffpot')).findIndex(
+                c => (((c.querySelector('img') || {}).alt) || '') === wanted)""",
+            name,
+        )
+        if index is None or index < 0:
+            break
+        cells = page.query_selector_all("#backpack-grid .cell.buffpot")
+        if index >= len(cells):
+            break
+        cells[index].click(timeout=3000)
+        page.wait_for_timeout(500)
+        used += 1
+    if used:
+        log(f"  Usei {used}x '{name}' (+{used * POTION_BOOST_SECONDS // 60} min de boost).")
+    return used
+
+
+def read_potion_info(page, log):
+    """Pra tela de Pocoes da GUI: catalogo do Mercador (preco/status de hoje)
+    + estoque na mochila."""
+    open_merchant_potions(page)
+    try:
+        data = read_merchant_potions(page)
+    finally:
+        close_merchant(page)
+    return {"potions": data["potions"], "balance": data["balance"], "stock": count_backpack_potions(page)}
+
+
+def fetch_potion_info(log=print):
+    """Com o bot PARADO: conecta no Chrome e le o Mercador. Com o bot rodando,
+    use request_from_bot(read_potion_info)."""
+    if not launch_browser(log):
+        return None
+    with sync_playwright() as playwright:
+        return read_potion_info(connect_game_page(playwright), log)
+
+
+def prepare_boss_potions(page, log):
+    """Antes de uma sequencia de chefes: se o usuario ligou 'usar pocoes',
+    completa o que faltar (compra ate' o limite diario) e USA a quantidade
+    escolhida de cada uma - cada uso empilha +30 min, entao nao precisa
+    reaplicar no meio. Nao reusa enquanto o boost anterior ainda vale."""
+    config = potion_config()
+    if not config["use_in_bosses"]:
+        return
+    now = time.monotonic()
+    wanted = {
+        name: item["use_qty"] for name, item in config["items"].items()
+        if item["use_qty"] > 0 and BOSS_POTION_MEMORY["active_until"].get(name, 0) <= now
+    }
+    if not wanted:
+        return
+    stock = count_backpack_potions(page)
+    short = [name for name, qty in wanted.items() if stock.get(name, 0) < qty]
+    if short:
+        state = load_state()
+        last_buy = state.get("potion_last_buy") or {}
+        to_buy = [n for n in short if last_buy.get(n) != today_key()]
+        if to_buy:
+            result = buy_potions_now(page, to_buy, log)
+            for name in result["bought"] + result["limit_reached"]:
+                last_buy[name] = today_key()
+            state["potion_last_buy"] = last_buy
+            save_state(state)
+            collect_potions_from_inbox(page, log)
+            stock = count_backpack_potions(page)
+    for name, qty in wanted.items():
+        have = stock.get(name, 0)
+        if have < qty:
+            log(f"  '{name}': so' tenho {have} (queria {qty}) - uso o que tem.")
+        used = min(qty, have)
+        if used > 0 and use_potion(page, name, used, log):
+            BOSS_POTION_MEMORY["active_until"][name] = time.monotonic() + used * POTION_BOOST_SECONDS
+
+
+def execute_dom_potion_stock_step(page, step, log):
+    """Passo tipo 'dom_potion_stock': garante a compra diaria (1 por dia) de
+    cada pocao que o usuario marcou 'comprar 1 por dia' - estoque pras
+    sequencias longas de chefes. Sem nada marcado nao toca no jogo. O dia da
+    ultima compra fica no arquivo de estado; se o jogo ja mostrar o limite
+    atingido (comprou na mao hoje), conta como feito."""
+    config = potion_config()
+    wanted = [name for name, item in config["items"].items() if item["buy_daily"]]
+    if not wanted:
+        return True
+    state = load_state()
+    last_buy = state.get("potion_last_buy") or {}
+    now = time.monotonic()
+    pending = [
+        name for name in wanted
+        if last_buy.get(name) != today_key() and BOSS_POTION_MEMORY["retry_after"].get(name, 0) <= now
+    ]
+    if not pending:
+        return True
+    result = buy_potions_now(page, pending, log)
+    for name in result["bought"] + result["limit_reached"]:
+        last_buy[name] = today_key()
+    for name in pending:
+        if name not in last_buy or last_buy[name] != today_key():
+            BOSS_POTION_MEMORY["retry_after"][name] = now + POTION_BUY_RETRY_SECONDS
+    state["potion_last_buy"] = last_buy
+    save_state(state)
+    if result["bought"]:
+        collect_potions_from_inbox(page, log)
+    return True
+
+
 ITEM_ATTR_PATTERN = re.compile(r'class="tt-attr">([^<(]+?)\s+[+-][\d.,]+%?\s*\(Lv\.(\d+)\)')
 
 
@@ -2668,6 +3124,9 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
 
     target_name = None  # garante que exista mesmo se stop_event ja estiver setado ao entrar no laco
     fought_any = False
+    potions_prepared = False  # pocoes (compra/uso) so' uma vez por sequencia, antes do 1o chefe
+    sequence_started = None  # inicio do 1o combate - pra gravar quanto tempo a sequencia leva
+    fights = 0
     while not stop_event.is_set():
         try:
             click_open_wave(page, open_selector)
@@ -2750,6 +3209,32 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                 except Exception as error:
                     log(f"  Erro ao reabrir a lista de Chefes apos trocar o amuleto: {error}")
                     return False
+            if not fought_any and not potions_prepared:
+                potions_prepared = True
+                if potion_config()["use_in_bosses"]:
+                    # mesma limitacao do amuleto: a lista de chefes e o Mercador/
+                    # Armazem sao modais - fecha a lista, cuida das pocoes e
+                    # reabre a lista (com 'Prontos') antes do combate.
+                    page.keyboard.press("Escape")
+                    time.sleep(0.3)
+                    try:
+                        prepare_boss_potions(page, log)
+                    except Exception as error:
+                        if is_connection_dead_error(error):
+                            raise
+                        log(f"  Erro ao preparar as pocoes dos chefes: {error}")
+                    try:
+                        click_open_wave(page, open_selector)
+                        page.click(boss_menu_selector, timeout=3000)
+                        ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
+                        if "on" not in ready_class.split():
+                            page.click(ready_selector, timeout=3000)
+                        time.sleep(0.3)
+                    except Exception as error:
+                        log(f"  Erro ao reabrir a lista de Chefes apos as pocoes: {error}")
+                        return False
+            if sequence_started is None:
+                sequence_started = time.monotonic()
             fought = fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector)
             if not fought:
                 if BOSS_AMULET_MEMORY["changed"]:
@@ -2759,6 +3244,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                     read_bosstiary_kills(page, log)
                 return False
             fought_any = True
+            fights += 1
 
             # entre um chefe e outro, da uma chance pras rotinas de proxima
             # prioridade (tasks de guild, depois vender/entregar) - sem isso,
@@ -2772,6 +3258,11 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         break
 
     if target_name is None:
+        if fought_any and sequence_started is not None:
+            # sequencia COMPLETA (nao interrompida): grava quanto tempo levou -
+            # base da sugestao de quantas pocoes cobrem a lista inteira.
+            record_boss_run(time.monotonic() - sequence_started, fights)
+            log(f"  Sequencia de chefes concluida em {(time.monotonic() - sequence_started) / 60:.1f}min ({fights} chefe(s)).")
         # sequencia de chefes acabou (nenhum pronto restante) - se o amuleto
         # foi trocado pro Stone Skin em algum ponto dela, volta pro que
         # estava antes AGORA, uma unica vez pra sequencia inteira.
@@ -4596,6 +5087,8 @@ def execute_step(page, step, stop_event, log, all_routines=None):
         return execute_dom_guild_tasks_step(page, step, log)
     if step_type == "dom_codex_campaign":
         return execute_dom_codex_campaign_step(page, step, log)
+    if step_type == "dom_potion_stock":
+        return execute_dom_potion_stock_step(page, step, log)
     if step_type == "dom_hunt_bestiary":
         return execute_dom_hunt_bestiary_step(page, step, log)
     if step_type == "dom_auto_build":
@@ -4809,6 +5302,17 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                             log(f"Erro ao ler os dados da Campanha de Codex: {error}")
                             CODEX_REFRESH_REQUEST["result"] = None
                         CODEX_REFRESH_REQUEST["done"].set()
+
+                    if BOT_CALL_REQUEST["fn"] is not None:
+                        call, BOT_CALL_REQUEST["fn"] = BOT_CALL_REQUEST["fn"], None
+                        try:
+                            BOT_CALL_REQUEST["result"] = call(page, log)
+                        except Exception as error:
+                            if is_connection_dead_error(error):
+                                raise
+                            log(f"Erro ao atender o pedido da interface: {error}")
+                            BOT_CALL_REQUEST["result"] = None
+                        BOT_CALL_REQUEST["done"].set()
 
                     # reload periodico pra conter o vazamento de memoria do jogo
                     # (ver PAGE_RELOAD_INTERVAL_SECONDS) - so quando nao ha nada
