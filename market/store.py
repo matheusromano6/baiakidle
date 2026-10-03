@@ -200,6 +200,12 @@ class Store:
         return self._run("SELECT unit_price, ends_at, bid_count FROM sales "
                          "WHERE key=? AND ends_at>=?", (key, since_ms), fetch="all")
 
+    def stack_units_sold(self, key, since_ms):
+        """Unidades vendidas de um empilhavel desde 'since_ms' (demanda real)."""
+        row = self._run("SELECT COALESCE(SUM(qty), 0) AS u FROM sales WHERE key=? AND ends_at>=?",
+                        (key, since_ms), fetch="one")
+        return row["u"] if row else 0
+
     def sales_for_name(self, name_like, since_ms):
         return self._run(
             "SELECT key, kind, name, tier, up_level, ftier, qty, final_price, "

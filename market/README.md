@@ -358,18 +358,36 @@ A seção tem:
 - **Priorizar efeito**: chips com os efeitos da recompensa (Dano crítico,
   Onslaught, Chance de crítico, Ataque, Dano de magia...). Sem nenhum marcado
   mostra todas as entradas abertas; marcando, só entram as entradas que dão
-  aquele efeito. A escolha fica salva.
-- **O que comprar no market**: lista de compras somada nas entradas escolhidas -
-  por item, quanto falta, o preço justo por unidade, e os leilões de agora (qtd,
-  preço, desconto vs o justo, quanto da necessidade o lote cobre, quando fecha)
-  com **Dar lance** e **acompanhar**. Leilão novo começa no piso de 25 coins, então
-  o aviso "preço de largada, ainda pode subir" aparece enquanto faltar mais que
-  `alert_window_seconds`.
+  aquele efeito. A escolha fica salva e vale pras duas tabelas e pro custo.
+- **Compartilhamento entre entradas**: o mesmo item costuma faltar em várias
+  entradas, então comprar um lote grande atende todas de uma vez. Cada item mostra
+  **"🔗 atende N entradas"** (passe o mouse pra ver quais e quanto cada uma
+  precisa), o **custo de cobrir tudo** (lotes mais baratos de hoje) e **≈ quanto
+  dá por entrada**. Cada lote diz **quantas entradas atende por inteiro** (as de
+  menor necessidade primeiro) e o custo por entrada: 10k por 25 coins que
+  atende 3 entradas sai ≈8 coins cada. O **custo da entrada é rateado** pelo plano
+  de comprar tudo junto (a parte dela em cada item); embaixo aparece quanto
+  custaria **sozinha**. Tudo vale pro conjunto de entradas do filtro atual.
+- **Oferta x demanda** (por item): quanto há à venda agora e quantas vezes isso
+  cobre o que falta ("3,7× o que falta" ou "só 20%"), contra as unidades que o
+  mercado vende por dia (`codex_days`). Oferta curta ou demanda alta = comprar
+  logo; oferta sobrando = dá pra esperar o preço de largada.
+- **Ordenação** (salva): *entradas* - mais fácil de fechar (padrão), mais
+  completas (%), menos unidades faltando, menor custo, maior custo; *itens* -
+  melhores ofertas (padrão), atende mais entradas, menor custo pra cobrir (só
+  quem tem lote à venda), falta mais. Ordena **antes** de cortar a lista, então
+  "maior custo" mostra de fato as entradas mais caras (as vazias) e "menor custo"
+  as que dá pra fechar barato - combinando com o filtro de efeito.
+- **O que comprar no market**: lista de compras somada nas entradas escolhidas,
+  com o preço justo por unidade e os leilões de agora (qtd, preço, desconto vs o
+  justo, quando fecha) com **Dar lance** e **acompanhar**. Leilão novo começa no
+  piso de 25 coins, então o aviso "preço de largada, ainda pode subir" aparece
+  enquanto faltar mais que `alert_window_seconds`.
 - **Entradas abertas**: por entrada, a recompensa (efeito priorizado marcado com
-  ★), o progresso e o que falta de cada item com o custo **pelos lotes reais**
-  (cada lote tem piso de 25 coins; leilão novo usa o preço típico, nunca abaixo
-  do atual), mais baratas de fechar primeiro. "Incluir entradas bloqueadas"
-  traz os degraus que ainda precisam de gold pra desbloquear (mostra o preço).
+  ★), o progresso, quantas unidades faltam e o que falta de cada item com o custo
+  **pelos lotes reais** (cada lote tem piso de 25 coins; leilão novo usa o preço
+  típico, nunca abaixo do atual). "Incluir entradas bloqueadas" traz os degraus
+  que ainda precisam de gold pra desbloquear (mostra o preço).
 Config: `codex_days` (14, janela do preço justo), `codex_max_entries` e
 `codex_max_items` (40 cada, o que a seção lista). O arquivo `codex_progress.json`
 é pessoal (fica fora do git, do zip de compartilhamento e do artefato do Mac).

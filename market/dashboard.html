@@ -334,14 +334,33 @@
       <button id="cxRefresh" title="o bot lê o Codex da sua conta no jogo (só leitura) - precisa do jogo aberto">Atualizar Codex</button>
     </div>
     <div class="row-inline" id="cxPrio" title="escolha os efeitos que você quer priorizar - sem nenhum marcado, mostra todos"></div>
+    <div class="row-inline">
+      <label class="mut" style="font-size:12px">Ordenar entradas
+        <select id="cxSortE">
+          <option value="easy">mais fácil de fechar</option>
+          <option value="complete">mais completas (%)</option>
+          <option value="missing">menos unidades faltando</option>
+          <option value="cost_asc">menor custo</option>
+          <option value="cost_desc">maior custo</option>
+        </select></label>
+      <label class="mut" style="font-size:12px">Ordenar itens
+        <select id="cxSortI">
+          <option value="best">melhores ofertas</option>
+          <option value="serves">atende mais entradas</option>
+          <option value="cost_asc">menor custo p/ cobrir</option>
+          <option value="missing">falta mais</option>
+        </select></label>
+    </div>
     <div id="cxCards"></div>
     <div id="cxBody">
       <h3 style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 4px">O que comprar no market <span class="mut" style="text-transform:none;letter-spacing:0">(itens que faltam nas entradas abaixo, com os leilões de agora)</span></h3>
       <div style="overflow-x:auto"><table id="cxItems">
         <thead><tr>
-          <th>Item</th><th title="quanto falta entregar, somado nas entradas escolhidas">Falta</th>
+          <th>Item</th><th title="quanto falta entregar, somado nas entradas escolhidas, e em quantas entradas esse item aparece - comprar uma vez atende todas">Falta (total)</th>
           <th title="preço justo por unidade (mediana dos últimos dias) e nº de vendas">Preço justo/un</th>
-          <th title="leilões ativos agora: quantidade, preço, desconto vs o justo e quanto da sua necessidade o lote cobre. Leilão novo começa no piso (25 coins): o preço ainda pode subir">Leilões agora</th>
+          <th title="o que há à venda agora e o quanto isso cobre do que falta, contra quantas unidades o mercado vende por dia">Oferta x demanda</th>
+          <th title="custo de cobrir TUDO que falta desse item nos lotes mais baratos de hoje (cada lote tem piso de 25 coins) e quanto isso dá por entrada atendida">Custo p/ cobrir tudo</th>
+          <th title="leilões ativos agora: quantidade, preço, desconto vs o justo e quantas entradas o lote atende por inteiro. Leilão novo começa no piso (25 coins): o preço ainda pode subir">Leilões agora</th>
         </tr></thead><tbody></tbody>
       </table></div>
       <div class="empty" id="cxItemsEmpty" hidden>nenhum item das entradas escolhidas à venda agora</div>
@@ -349,8 +368,8 @@
       <div style="overflow-x:auto"><table id="cxEntries">
         <thead><tr>
           <th>Entrada</th><th>Recompensa</th><th>Progresso</th>
-          <th title="o que falta de cada item e quanto custa pelos lotes de hoje (leilão novo: preço típico, nunca abaixo do preço atual; cada lote tem piso de 25 coins)">Falta (custo no market)</th>
-          <th title="soma dos itens acima comprados nos lotes mais baratos de hoje">Custo total</th>
+          <th title="o que falta de cada item e a parte dela no custo. 🔗 = o mesmo item também falta em outras entradas: comprar junto sai mais barato (cada lote tem piso de 25 coins)">Falta (custo no market)</th>
+          <th title="rateado = a parte desta entrada no plano de comprar tudo junto (um lote grande atende várias entradas). 'sozinha' = quanto custaria comprar só pra ela">Custo</th>
         </tr></thead><tbody></tbody>
       </table></div>
       <div class="empty" id="cxEntriesEmpty" hidden>nenhuma entrada aberta com esses efeitos</div>
@@ -1399,9 +1418,13 @@ function renderAttrs(a){
 function cxLot(l, fair){
   const watching = (STATE.watches || []).some(w => w.auction_id === l.auction_id);
   const max = Math.max(l.price + 1, Math.round((fair || 0) * l.qty * 0.75));
-  return `<div style="margin-bottom:4px"><strong>${fmt(l.qty)}×</strong> por ${fmt(l.price)} <span class="mut">(${(+l.unit).toPrecision(2)}/un)</span>`
+  const serves = l.serves_n
+    ? `<span class="pos" title="${esc(l.serves.join(" · "))}${l.serves_n > l.serves.length ? " ..." : ""}">atende ${l.serves_n} entrada(s)${l.per_entry != null ? " · ≈" + fmt(l.per_entry) + "c cada" : ""}</span>`
+    : `<span class="mut">cobre ${Math.round(l.covers * 100)}% do que falta (não fecha nenhuma entrada sozinho)</span>`;
+  return `<div style="margin-bottom:5px"><strong>${fmt(l.qty)}×</strong> por ${fmt(l.price)} <span class="mut">(${(+l.unit).toPrecision(2)}/un)</span>`
     + (l.discount != null ? ` <span class="${l.good ? "pos" : "mut"}">${l.discount >= 0 ? "-" : "+"}${Math.abs(Math.round(l.discount * 100))}%</span>` : "")
-    + ` <span class="mut" style="font-size:10px">#${l.auction_id} · ${l.bids} lances · fecha <span data-cd="${l.ends_at}">${secsTxt(l.secs_left)}</span>${l.early ? " · preço de largada, ainda pode subir" : ""} · cobre ${Math.round(l.covers * 100)}%</span> `
+    + ` ${serves}`
+    + `<div class="mut" style="font-size:10px">#${l.auction_id} · ${l.bids} lances · fecha <span data-cd="${l.ends_at}">${secsTxt(l.secs_left)}</span>${l.early ? " · preço de largada, ainda pode subir" : ""}</div>`
     + `<button data-bid="${l.auction_id}" data-max="${max}">Dar lance</button> `
     + (watching ? `<button class="ghost" disabled>✓ acompanhando</button>` : `<button class="ghost" data-addwatch="${l.auction_id}">acompanhar</button>`)
     + `</div>`;
@@ -1409,6 +1432,8 @@ function cxLot(l, fair){
 function renderCodex(c){
   if(!c) return;
   $("#cxLocked").checked = !!c.include_locked;
+  if(c.sort_entries) $("#cxSortE").value = c.sort_entries;
+  if(c.sort_items) $("#cxSortI").value = c.sort_items;
   const btn = $("#cxRefresh");
   btn.disabled = !c.can_refresh || !!c.refreshing;
   btn.textContent = c.refreshing ? "Lendo o Codex..." : "Atualizar Codex";
@@ -1429,6 +1454,7 @@ function renderCodex(c){
   $("#cxCards").innerHTML = `<div class="pnl-grid" style="margin-top:8px">
     ${card("Entradas consideradas", s.considered, "", (c.prio || []).length ? "com os efeitos escolhidos" : "todas as abertas")}
     ${card("Prontas pra entregar", s.deliver_now, s.deliver_now ? "pos" : "", "já tem tudo nas bags")}
+    ${card("Itens compartilhados", s.shared_items, s.shared_items ? "pos" : "", "faltam em 2+ entradas: comprar uma vez atende várias")}
     ${card("Itens à venda agora", `${s.items_with_lots}/${s.items}`, "", "dos que faltam nas entradas")}
     ${card("Lotes com desconto", s.good_lots, s.good_lots ? "pos" : "", "abaixo do preço justo")}
   </div>`;
@@ -1438,10 +1464,18 @@ function renderCodex(c){
   for(const i of c.items){
     const tr = document.createElement("tr");
     if(i.good_n) tr.className = "t-excelente";
+    const list = (i.entry_list || []).map(e => `${e.name} (${fmt(e.missing)})`).join("\n") + (i.entries_n > (i.entry_list || []).length ? "\n..." : "");
+    const cover = i.supply_cover >= 1 ? `<span class="pos">${i.supply_cover >= 10 ? "10×+" : i.supply_cover.toFixed(1) + "×"} o que falta</span>`
+                                      : `<span class="warn-t">só ${Math.round(i.supply_cover * 100)}% do que falta</span>`;
     tr.innerHTML = `
       <td><strong>${i.item}</strong> ${copyBtn(i.item)}</td>
-      <td class="num">${fmt(i.missing)}<div class="mut" style="font-size:10px" title="${esc(i.entries.join(" · "))}">${i.entries_n} entrada(s)</div></td>
-      <td class="num">${i.fair == null ? `<span class="mut">sem histórico</span>` : `${(+i.fair).toPrecision(2)}<div class="mut" style="font-size:10px">n${i.n} · ${i.per_day}/dia</div>`}</td>
+      <td class="num">${fmt(i.missing)}<div class="${i.entries_n > 1 ? "pos" : "mut"}" style="font-size:10px;cursor:help" title="${esc(list)}">${i.entries_n > 1 ? "🔗 atende " + i.entries_n + " entradas" : "1 entrada"}</div></td>
+      <td class="num">${i.fair == null ? `<span class="mut">sem histórico</span>` : `${(+i.fair).toPrecision(2)}<div class="mut" style="font-size:10px">n${i.n}</div>`}</td>
+      <td style="font-size:12px">${i.supply_n ? `${fmt(i.supply_qty)} un em ${i.supply_n} lote(s)<div>${cover}</div>` : `<span class="mut">nada à venda agora</span>`}
+        <div class="mut" style="font-size:10px">vendem ~${fmt(i.units_per_day)} un/dia</div></td>
+      <td class="num">${i.plan_cost == null ? `<span class="mut">sem preço</span>` : `<strong>${fmt(i.plan_cost)}</strong>`
+        + `<div class="mut" style="font-size:10px">${i.plan_lots} lote(s)${i.plan_covered ? "" : " + resto no preço justo"}</div>`
+        + (i.entries_n > 1 ? `<div class="pos" style="font-size:10px">≈${fmt(i.cost_per_entry)} por entrada</div>` : "")}</td>
       <td>${i.lots.length ? i.lots.map(l => cxLot(l, i.fair)).join("") + (i.lots_n > i.lots.length ? `<div class="mut" style="font-size:10px">+${i.lots_n - i.lots.length} lote(s)</div>` : "") : `<span class="mut">nenhum leilão agora</span>`}</td>`;
     ib.appendChild(tr);
   }
@@ -1450,16 +1484,23 @@ function renderCodex(c){
   $("#cxEntriesEmpty").hidden = c.entries.length > 0;
   for(const e of c.entries){
     const reqs = e.deliver_now ? `<span class="pos">tudo nas bags - é só entregar</span>` : e.reqs.slice(0, 6).map(r =>
-      `<div><strong>${fmt(r.missing)}×</strong> ${r.item} <span class="${r.cost == null ? "mut" : r.covered ? "pos" : "warn-t"}" style="font-size:11px">${r.cost == null ? "sem preço" : "≈" + fmt(r.cost) + "c"}</span>`
+      `<div><strong>${fmt(r.missing)}×</strong> ${r.item}`
+      + (r.shared_with ? ` <span class="pos" style="cursor:help" title="o mesmo item também falta em ${r.shared_with} outra(s) entrada(s): comprar junto divide o custo">🔗${r.shared_with}</span>` : "")
+      + ` <span class="${r.cost == null ? "mut" : r.covered ? "pos" : "warn-t"}" style="font-size:11px">${r.cost == null ? "sem preço" : "≈" + fmt(r.cost) + "c"}</span>`
       + `<span class="mut" style="font-size:10px"> · ${r.lots_n ? r.lots_n + " lote(s)" + (r.covered ? "" : ", não cobre tudo") : "sem lote agora"}</span></div>`).join("")
       + (e.reqs.length > 6 ? `<div class="mut" style="font-size:10px">+${e.reqs.length - 6} itens</div>` : "");
+    const allUnpriced = !e.deliver_now && e.unpriced === e.reqs.length;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${e.name} <span class="tag">${e.cat === "boss" ? "boss" : "hunt"}</span>${e.status === "locked" ? ` <span class="tag" title="o degrau precisa ser desbloqueado com gold antes de aceitar entregas">🔒 ${e.unlock_cost ? fmt(e.unlock_cost) + " gold" : "bloqueada"}</span>` : ""}</td>
       <td style="font-size:12px">${(e.bonus_text || "-").replace(/ · /g, "<br>")}${e.prio_hit.length ? `<div class="pos" style="font-size:11px">★ ${e.prio_hit.join(", ")}</div>` : ""}</td>
-      <td class="num">${Math.round(e.progress)}%<div class="cxbar"><i style="width:${Math.min(100, e.progress)}%"></i></div></td>
+      <td class="num">${Math.round(e.progress)}%<div class="cxbar"><i style="width:${Math.min(100, e.progress)}%"></i></div>${e.deliver_now ? "" : `<div class="mut" style="font-size:10px">faltam ${fmt(e.missing_units)} un · ${e.reqs.length} itens</div>`}</td>
       <td style="font-size:12px">${reqs}</td>
-      <td class="num">${e.deliver_now ? "-" : `<strong>${fmt(e.cost)}</strong>${e.unpriced ? `<div class="warn-t" style="font-size:10px">+${e.unpriced} sem preço</div>` : ""}${e.covered_all ? `<div class="pos" style="font-size:10px">dá pra comprar tudo agora</div>` : ""}`}</td>`;
+      <td class="num">${e.deliver_now ? "-" : allUnpriced ? `<span class="mut">sem preço</span>` : `<strong>${fmt(e.cost)}</strong>`
+        + (e.cost_solo !== e.cost ? `<div class="mut" style="font-size:10px">sozinha ${fmt(e.cost_solo)}</div>` : "")
+        + (e.shared_n ? `<div class="pos" style="font-size:10px">🔗 ${e.shared_n} item(ns) dividido(s)</div>` : "")
+        + (e.unpriced ? `<div class="warn-t" style="font-size:10px">+${e.unpriced} sem preço</div>` : "")
+        + (e.covered_all ? `<div class="pos" style="font-size:10px">dá pra comprar tudo agora</div>` : "")}</td>`;
     eb.appendChild(tr);
   }
 }
@@ -1909,6 +1950,14 @@ document.addEventListener("click", async e => {
   }catch(err){ alert("erro: "+err.message); }
 });
 
+$("#cxSortE").onchange = async e => {
+  await api("POST", "/api/settings", {codex_sort: e.target.value});
+  load();
+};
+$("#cxSortI").onchange = async e => {
+  await api("POST", "/api/settings", {codex_sort_items: e.target.value});
+  load();
+};
 $("#cxLocked").onchange = async e => {
   await api("POST", "/api/settings", {codex_locked: e.target.checked});
   load();

@@ -167,9 +167,13 @@ def _codex_state(now):
     prog = codex.load_progress(CFG)
     prio = [k for k in (STORE.get_setting("codex_prio", "") or "").split(",") if k]
     locked = STORE.get_setting("codex_locked", "0") == "1"
-    sig = (ACTIVE_AT, prog["_mtime"] if prog else None, tuple(prio), locked, now // 3_600_000)
+    sort_e = STORE.get_setting("codex_sort", "easy")
+    sort_i = STORE.get_setting("codex_sort_items", "best")
+    sig = (ACTIVE_AT, prog["_mtime"] if prog else None, tuple(prio), locked, sort_e, sort_i,
+           now // 3_600_000)
     if _CDX["sig"] != sig:
-        _CDX.update(sig=sig, data=codex.view(STORE, CFG, ACTIVE, now, prog, prio, locked))
+        _CDX.update(sig=sig, data=codex.view(STORE, CFG, ACTIVE, now, prog, prio, locked,
+                                             sort_e, sort_i))
     out = dict(_CDX["data"])
     out.update(prio=prio, include_locked=locked, attrs=codex.ATTRS,
                can_refresh=codex.can_refresh(), refreshing=codex.refreshing(),
@@ -711,6 +715,10 @@ def act_settings(body):
         STORE.set_setting("codex_prio", ",".join(k for k in body["codex_prio"] if k in codex.ATTR_LABEL))
     if "codex_locked" in body:
         STORE.set_setting("codex_locked", "1" if body["codex_locked"] else "0")
+    if body.get("codex_sort") in codex.ENTRY_SORTS:
+        STORE.set_setting("codex_sort", body["codex_sort"])
+    if body.get("codex_sort_items") in codex.ITEM_SORTS:
+        STORE.set_setting("codex_sort_items", body["codex_sort_items"])
     return {"ok": True}, 200
 
 
