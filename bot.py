@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.17.0"
+VERSION = "4.17.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -2436,11 +2436,18 @@ def open_merchant_potions(page):
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)
     if not page.is_visible(".merchant-card"):
-        if not page.is_visible("#tab-merchant"):
-            # 'Comercio' e' um alternador - se o menu ja estava aberto, clicar
-            # de novo fecharia (o item 'Mercador' sumiria).
-            page.click("#tab-comercio", timeout=3000)
-            page.wait_for_timeout(500)
+        # o menu 'Comercio' abre por hover (com atraso) E por clique (que
+        # ALTERNA): clicar logo depois do hover fechava o que ele acabou de
+        # abrir (corrida confirmada ao vivo). Tenta o hover primeiro, confere
+        # se o item 'Mercador' apareceu e so' entao cai pro clique.
+        for attempt in range(3):
+            if page.is_visible("#tab-merchant"):
+                break
+            if attempt % 2 == 0:
+                page.hover("#tab-comercio", timeout=3000)
+            else:
+                page.click("#tab-comercio", timeout=3000)
+            page.wait_for_timeout(700)
         page.click("#tab-merchant", timeout=3000)
         page.wait_for_selector(".merchant-card .store-sidebtn", timeout=5000)
         page.wait_for_timeout(700)
@@ -2456,13 +2463,44 @@ def open_merchant_potions(page):
 
 
 def close_merchant(page):
+    """Fecha o carrinho (se aberto) e o Mercador - confere que fechou."""
+    for _ in range(3):
+        try:
+            if page.is_visible(".gs-cartlayer"):
+                page.locator(".gs-cartwin-close").first.click(timeout=2000)
+                page.wait_for_timeout(300)
+            if page.is_visible(".merchant-card"):
+                page.click("#merchant-modal-close", timeout=3000)
+                page.wait_for_timeout(400)
+        except Exception:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+        if not page.is_visible(".merchant-card"):
+            return
+
+
+def clear_merchant_cart(page, log):
+    """O carrinho do Mercador persiste (sobra de uma tentativa interrompida ou
+    de algo adicionado na mao) - o bot so' pode comprar EXATAMENTE o que
+    pediu, entao comeca sempre de um carrinho vazio. Retorna quantos itens
+    tinha."""
+    fab = page.locator(".gs-cartfab")
+    if not (fab.count() and fab.first.is_visible()):
+        return 0
+    badge = page.evaluate("() => ((document.querySelector('.gs-cartfab-badge') || {}).textContent || '')")
+    count = int(re.sub(r"\D", "", badge) or 0)
+    fab.first.click(timeout=3000)
+    page.wait_for_timeout(600)
+    page.locator(".gs-cart-clear").first.click(timeout=3000)
+    page.wait_for_timeout(500)
     try:
-        if page.is_visible(".gs-cartlayer"):
-            page.locator(".gs-cartwin-close").first.click(timeout=2000)
-            page.wait_for_timeout(300)
-        page.click("#merchant-modal-close", timeout=3000)
+        page.locator(".gs-cartwin-close").first.click(timeout=1000)
+        page.wait_for_timeout(300)
     except Exception:
-        page.keyboard.press("Escape")
+        pass
+    if count:
+        log(f"  O carrinho do Mercador tinha {count} item(ns) de antes - limpei pra comprar so' o pedido.")
+    return count
 
 
 def read_merchant_potions(page):
@@ -2496,11 +2534,14 @@ def read_merchant_potions(page):
         else:
             status = "unavailable"
         id_match = re.search(r"id\s+(\d+)", row["id_text"])
-        price_digits = re.sub(r"\D", "", row["price_text"])
+        # so' o PRIMEIRO numero: com a pocao ja no carrinho o botao mostra
+        # '10.000.000 · 1x' e juntar todos os digitos lia o '1' do '1x' no preco
+        # (100.000.001) - confirmado ao vivo.
+        price_match = re.search(r"\d[\d.]*", row["price_text"])
         potions.append({
             "name": row["name"].strip(), "desc": row["desc"].strip(),
             "id": int(id_match.group(1)) if id_match else None,
-            "price": int(price_digits) if price_digits else 0, "status": status,
+            "price": int(price_match.group(0).replace(".", "")) if price_match else 0, "status": status,
         })
     balance_match = re.search(r"[\d.]+", raw["balance_text"])
     balance = int(balance_match.group(0).replace(".", "")) if balance_match else None
@@ -2517,6 +2558,8 @@ def buy_potions_now(page, names, log):
     result = {"bought": [], "limit_reached": [], "failed": []}
     open_merchant_potions(page)
     try:
+        if clear_merchant_cart(page, log):
+            open_merchant_potions(page)
         data = read_merchant_potions(page)
         by_name = {p["name"]: p for p in data["potions"]}
         to_buy = []
@@ -2710,11 +2753,18 @@ def prepare_boss_potions(page, log):
         last_buy = state.get("potion_last_buy") or {}
         to_buy = [n for n in short if last_buy.get(n) != today_key()]
         if to_buy:
-            result = buy_potions_now(page, to_buy, log)
-            for name in result["bought"] + result["limit_reached"]:
-                last_buy[name] = today_key()
-            state["potion_last_buy"] = last_buy
-            save_state(state)
+            for attempt in range(2):
+                result = buy_potions_now(page, to_buy, log)
+                for name in result["bought"] + result["limit_reached"]:
+                    last_buy[name] = today_key()
+                state["potion_last_buy"] = last_buy
+                save_state(state)
+                to_buy = [n for n in to_buy if n in result["failed"]]
+                if not to_buy:
+                    break
+                if attempt == 0:
+                    log("  Compra de pocoes nao confirmou - tentando mais uma vez...")
+                    page.wait_for_timeout(2000)
             collect_potions_from_inbox(page, log)
             stock = count_backpack_potions(page)
     for name, qty in wanted.items():
