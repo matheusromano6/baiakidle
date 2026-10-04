@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.17.2"
+VERSION = "4.17.3"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -4671,17 +4671,39 @@ def finish_completed_bestiary_tracks(page, step, log):
     name_selector = step.get("bestiary_overlay_name_selector", ".gtk-hunt-name")
     count_selector = step.get("bestiary_overlay_count_selector", ".gtk-count")
 
-    for row in page.query_selector_all(row_selector):
-        count_el = row.query_selector(count_selector)
-        if count_el is None or "ok" not in (count_el.get_attribute("class") or "").split():
-            continue
-        name_el = row.query_selector(name_selector)
-        name = (name_el.text_content() or "").strip() if name_el else "?"
+    # re-consulta a cada clique: o jogo redesenha o quadro ao desligar um
+    # rastreio (referencias antigas das outras linhas ficam 'detached').
+    # 'tried' evita insistir na mesma criatura se o clique nao a remover.
+    tried = set()
+    for _ in range(10):
+        target = None
+        for row in page.query_selector_all(row_selector):
+            count_el = row.query_selector(count_selector)
+            if count_el is None or "ok" not in (count_el.get_attribute("class") or "").split():
+                continue
+            name_el = row.query_selector(name_selector)
+            name = (name_el.text_content() or "").strip() if name_el else "?"
+            if name in tried:
+                continue
+            target = (row, name)
+            break
+        if target is None:
+            return
+        row, name = target
+        tried.add(name)
         try:
             row.click(timeout=2000)
-            log(f"  Bestiary de '{name}' completo - rastreio finalizado (vaga liberada).")
         except Exception as error:
-            log(f"  Erro ao finalizar rastreio de '{name}' no Bestiary: {error}")
+            # CONFIRMADO nos logs: o painel do grupo ('#panel-party', HUD livre)
+            # pode ficar POR CIMA do quadro de rastreio e interceptar o clique
+            # real. O botao so' escuta 'click' - dispara direto nele.
+            try:
+                row.dispatch_event("click")
+            except Exception as fallback_error:
+                log(f"  Erro ao finalizar rastreio de '{name}' no Bestiary: {error} / {fallback_error}")
+                continue
+        log(f"  Bestiary de '{name}' completo - rastreio finalizado (vaga liberada).")
+        time.sleep(0.3)
 
 
 def execute_dom_hunt_bestiary_step(page, step, log):
