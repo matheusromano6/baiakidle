@@ -10,8 +10,10 @@ opera_profile/
 logs/
 routines.json
 routines_opera.json
+routines_idledeck.json
 settings.json
 settings_opera.json
+settings_idledeck.json
 *.state.json
 
 # painel de mercado - o CODIGO agora vai junto no build compartilhado (roda

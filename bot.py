@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.17.4"
+VERSION = "4.18.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -36,6 +36,18 @@ BROWSER_PROFILES = {
         "profile_dir_name": "opera_profile",
         "routines_filename": "routines_opera.json",
         "settings_filename": "settings_opera.json",
+    },
+    # IdleDeck: o jogo roda num "slot" do app (Electron), nao num navegador
+    # nosso - 'launcher' faz o launch_browser abrir o app com a porta de
+    # depuracao (ver launch_idledeck). 9224 pra nao colidir com Chrome (9222) e
+    # Opera (9223). 'profile_dir_name' nao e usado (o app guarda as proprias sessoes).
+    "idledeck": {
+        "label": "IdleDeck",
+        "cdp_port": 9224,
+        "profile_dir_name": "idledeck_profile",
+        "routines_filename": "routines_idledeck.json",
+        "settings_filename": "settings_idledeck.json",
+        "launcher": "idledeck",
     },
 }
 CURRENT_PROFILE = "chrome"  # navegador ativo nesta sessao - trocado via set_active_profile()
@@ -638,6 +650,148 @@ def mark_chrome_profile_clean(profile_dir):
         pass  # so um cuidado a mais - nao vale travar o launch por causa disso
 
 
+# --- IdleDeck (perfil "idledeck") -------------------------------------------
+# O IdleDeck (app Electron da Microsoft Store que roda varias contas de jogos
+# idle em "slots") nao expoe porta de depuracao sozinho. CONFIRMADO ao vivo: aberto
+# pela ativacao do pacote com '--remote-debugging-port=N' ele aceita o
+# argumento e o jogo de cada slot aparece como uma PAGINA normal (nao iframe)
+# em 'baiakidle.com/jogar/' - o resto do bot funciona igual. Matar os
+# processos a forca ja deixou um subprocesso 'fantasma' que impedia reabrir o
+# app ("aplicativo sendo encerrado", 0x8000001A) - por isso o bot so pede pra
+# fechar pela janela (CloseMainWindow) e espera; nunca usa kill.
+IDLEDECK_CLOSE_WAIT_SECONDS = 120   # tempo pro usuario confirmar 'Sair' no dialogo do app
+IDLEDECK_LAUNCH_TIMEOUT_SECONDS = 40
+
+_IDLEDECK_PS_COMMON = """
+$ErrorActionPreference = 'Stop'
+function Get-IdleDeckProcs { @(Get-Process IdleDeck -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited }) }
+"""
+
+_IDLEDECK_PS_ACTIVATE = """
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+[ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IApplicationActivationManager {
+    int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, int options, out uint processId);
+    int ActivateForFile([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, [MarshalAs(UnmanagedType.LPWStr)] string verb, out uint processId);
+    int ActivateForProtocol([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, out uint processId);
+}
+[ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C"), ClassInterface(ClassInterfaceType.None)]
+public class ApplicationActivationManager : IApplicationActivationManager {
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.InternalCall, MethodCodeType = System.Runtime.CompilerServices.MethodCodeType.Runtime)]
+    public extern int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, int options, out uint processId);
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.InternalCall, MethodCodeType = System.Runtime.CompilerServices.MethodCodeType.Runtime)]
+    public extern int ActivateForFile([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, [MarshalAs(UnmanagedType.LPWStr)] string verb, out uint processId);
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.InternalCall, MethodCodeType = System.Runtime.CompilerServices.MethodCodeType.Runtime)]
+    public extern int ActivateForProtocol([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, IntPtr itemArray, out uint processId);
+}
+"@
+$pkg = Get-AppxPackage | Where-Object { $_.Name -like '*IdleDeck*' } | Select-Object -First 1
+if (-not $pkg) { Write-Output 'ERR IdleDeck nao esta instalado (pacote da Microsoft Store nao encontrado)'; exit 0 }
+$appId = (Get-AppxPackageManifest $pkg).Package.Applications.Application.Id
+$mgr = [IApplicationActivationManager](New-Object ApplicationActivationManager)
+[uint32]$procId = 0
+try {
+    $null = $mgr.ActivateApplication("$($pkg.PackageFamilyName)!$appId", "--remote-debugging-port=__PORT__", 0, [ref]$procId)
+    Write-Output "OK $procId"
+} catch {
+    Write-Output ("ERR " + $_.Exception.Message)
+}
+"""
+
+
+def _run_powershell(script, timeout=60):
+    """Roda um script PowerShell (codificado, sem problema de aspas) sem abrir
+    janela de console. Retorna a saida padrao (texto)."""
+    import base64
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        capture_output=True, text=True, timeout=timeout,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return (result.stdout or "").strip()
+
+
+def idledeck_running():
+    """True se ha processo do IdleDeck vivo (com ou sem porta de depuracao)."""
+    out = _run_powershell(_IDLEDECK_PS_COMMON + "(Get-IdleDeckProcs).Count", timeout=30)
+    return out.strip().isdigit() and int(out.strip()) > 0
+
+
+def idledeck_request_close():
+    """Pede pra janela principal fechar (igual clicar no X). O app pode abrir
+    um dialogo nativo perguntando se quer sair - quem confirma e' o usuario."""
+    _run_powershell(
+        _IDLEDECK_PS_COMMON
+        + "Get-IdleDeckProcs | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { $null = $_.CloseMainWindow() }",
+        timeout=30,
+    )
+
+
+def launch_idledeck(log=print):
+    """Equivalente de 'launch_browser' pro perfil IdleDeck: deixa o app aberto
+    com a porta de depuracao (cdp_port do perfil) respondendo. Retorna True se
+    a porta responde no final."""
+    if is_debug_port_open():
+        log("IdleDeck ja esta com a depuracao remota ativa.")
+        return True
+    if platform.system() != "Windows":
+        log("O perfil IdleDeck so funciona no Windows por enquanto (app da Microsoft Store).")
+        return False
+
+    try:
+        if idledeck_running():
+            log(
+                "O IdleDeck esta aberto SEM a depuracao remota - pedindo pra fechar. "
+                "Se aparecer uma janela perguntando, escolha SAIR (nao so minimizar); "
+                "o bot reabre sozinho em seguida (suas contas/logins ficam salvos)."
+            )
+            idledeck_request_close()
+            deadline = time.monotonic() + IDLEDECK_CLOSE_WAIT_SECONDS
+            last_reminder = time.monotonic()
+            while time.monotonic() < deadline and idledeck_running():
+                time.sleep(2)
+                if time.monotonic() - last_reminder >= 30:
+                    last_reminder = time.monotonic()
+                    log("  Ainda aguardando o IdleDeck fechar - feche pela janela dele (Sair).")
+            if idledeck_running():
+                log("O IdleDeck nao fechou a tempo. Feche pela janela (Sair) e clique em 'Abrir Jogo' de novo.")
+                return False
+            time.sleep(2)  # deixa o Windows liberar o pacote antes de reativar
+
+        log("Abrindo o IdleDeck com a depuracao remota...")
+        script = _IDLEDECK_PS_ACTIVATE.replace("__PORT__", str(cdp_port()))
+        deadline = time.monotonic() + IDLEDECK_LAUNCH_TIMEOUT_SECONDS
+        last_error = ""
+        while time.monotonic() < deadline:
+            out = _run_powershell(script, timeout=60)
+            if out.startswith("OK"):
+                break
+            last_error = out
+            if "nao esta instalado" in out:
+                break
+            time.sleep(3)  # logo apos fechar o Windows ainda pode recusar ("aplicativo sendo encerrado")
+        else:
+            out = "ERR " + last_error
+        if not out.startswith("OK"):
+            log(f"Nao consegui abrir o IdleDeck: {last_error or out}")
+            return False
+
+        while time.monotonic() < deadline:
+            if is_debug_port_open():
+                log("IdleDeck pronto.")
+                return True
+            time.sleep(0.5)
+    except Exception as error:
+        log(f"Erro ao abrir o IdleDeck: {error}")
+        return False
+
+    log("O IdleDeck abriu mas a porta de depuracao nao respondeu.")
+    return False
+
+
 def launch_browser(log=print):
     """Abre o navegador do perfil ativo (CURRENT_PROFILE: Chrome ou Opera) ja
     apontado pro jogo, com depuracao remota ligada.
@@ -647,6 +801,8 @@ def launch_browser(log=print):
     final, a porta de depuracao esta respondendo (ja estivesse aberta ou nao).
     """
     label = BROWSER_PROFILES[CURRENT_PROFILE]["label"]
+    if BROWSER_PROFILES[CURRENT_PROFILE].get("launcher") == "idledeck":
+        return launch_idledeck(log)
     if is_debug_port_open():
         log(f"{label} ja esta com a depuracao remota ativa.")
         return True
@@ -1300,17 +1456,37 @@ def connect_game_page(playwright):
     perfeitamente - so precisava de mais um instante."""
     browser = playwright.chromium.connect_over_cdp(cdp_url())
 
+    # IdleDeck: cada slot/conta e' uma pagina do jogo na mesma conexao. Com
+    # varias contas abertas, 'idledeck_account' (settings do perfil) e' um
+    # trecho do titulo da aba (o titulo comeca com o nome do personagem, ex:
+    # "Cibele Druid") que escolhe QUAL conta este bot controla; vazio = a 1a.
+    needle = ""
+    if BROWSER_PROFILES[CURRENT_PROFILE].get("launcher") == "idledeck":
+        needle = str(load_settings().get("idledeck_account") or "").strip().lower()
+
     deadline = time.monotonic() + CONNECT_GAME_PAGE_TIMEOUT_SECONDS
     while True:
         for context in browser.contexts:
             for page in context.pages:
-                if GAME_URL_PATTERN in page.url:
-                    return page
+                if GAME_URL_PATTERN not in page.url:
+                    continue
+                if needle:
+                    try:
+                        if needle not in (page.title() or "").lower():
+                            continue
+                    except Exception:
+                        continue
+                return page
         if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
 
     label = BROWSER_PROFILES[CURRENT_PROFILE]["label"]
+    if needle:
+        raise RuntimeError(
+            f"Aba do jogo nao encontrada no {label} (URL com '{GAME_URL_PATTERN}' e titulo com '{needle}'). "
+            "Confira o nome da conta em 'idledeck_account' nas configuracoes."
+        )
     raise RuntimeError(
         f"Aba do jogo nao encontrada (procurando '{GAME_URL_PATTERN}' na URL). "
         f"Abra o jogo no {label} iniciado com --remote-debugging-port={cdp_port()}."

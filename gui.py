@@ -371,7 +371,9 @@ class BotGUI:
         navegador por vez (o bot.py guarda o estado da automacao em
         variaveis globais do processo) - pra Chrome e Opera rodarem ao mesmo
         tempo, cada Play/Pause/Stop precisa ser de um processo separado."""
-        other_profile = next(key for key in bot.BROWSER_PROFILES if key != self.current_profile)
+        # com 3+ perfis, vai pro PROXIMO na ordem (Chrome -> Opera -> IdleDeck -> Chrome)
+        keys = list(bot.BROWSER_PROFILES)
+        other_profile = keys[(keys.index(self.current_profile) + 1) % len(keys)]
         if getattr(sys, "frozen", False):
             args = [sys.executable, "--profile", other_profile]
         else:
