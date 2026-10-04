@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.17.1"
+VERSION = "4.17.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -118,7 +118,16 @@ BOSS_MEMORY = {"next_check": 0.0, "display_next_check": 0.0, "missed_estimate": 
 # nao mexem no amuleto (nem trocam, nem revertem). 'changed' vazio = amuleto
 # ja no padrao (nada trocado); preenchido = precisa reverter pro que guarda
 # aqui assim que a sequencia acabar (ou for interrompida).
-BOSS_AMULET_MEMORY = {"changed": {}}
+#
+# 'verified' = a ultima leitura do Helper CONFIRMOU o Stone Skin equipado (so'
+# entao um chefe 'stone_skin' pode ser enfrentado). 'revert_fails' conta
+# tentativas seguidas de reverter sem sucesso (desiste depois de algumas).
+BOSS_AMULET_MEMORY = {"changed": {}, "verified": False, "revert_fails": 0}
+
+# Chefe 'stone_skin' sem o amuleto confirmado NUNCA e' enfrentado (pode custar
+# a morte dos chares). Pula ele e tenta de novo em poucos minutos, em vez de
+# cair na espera longa de cooldown.
+BOSS_AMULET_RETRY_SECONDS = 180
 
 # Placar de vitorias por chefe ({nome: kills}), lido direto do Bosstiary
 # (Cyclopedia > Bosstiary - o proprio jogo ja conta certinho, nao precisa o
@@ -3300,6 +3309,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     potions_prepared = False  # pocoes (compra/uso) so' uma vez por sequencia, antes do 1o chefe
     sequence_started = None  # inicio do 1o combate - pra gravar quanto tempo a sequencia leva
     fights = 0
+    amulet_blocked = False  # Stone Skin nao confirmado nesta chamada: chefes 'stone_skin' ficam de fora
     while not stop_event.is_set():
         try:
             click_open_wave(page, open_selector)
@@ -3348,6 +3358,8 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         target_needs_stone_skin = False
         for boss in step["bosses"]:
             if boss.get("enabled") and boss["name"] in ready_names:
+                if amulet_blocked and boss.get("stone_skin"):
+                    continue  # sem Stone Skin confirmado NAO enfrenta (pode matar os chares)
                 target_name = boss["name"]
                 target_needs_stone_skin = bool(boss.get("stone_skin"))
                 break
@@ -3361,7 +3373,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
             # acaba (mais abaixo) ou e interrompida (falha no combate, logo a
             # seguir) - conforme pedido, pra nao ficar abrindo/fechando o
             # Helper a cada chefe a toa.
-            if target_needs_stone_skin and not BOSS_AMULET_MEMORY["changed"]:
+            if target_needs_stone_skin and not BOSS_AMULET_MEMORY["verified"]:
                 # a lista de chefes ('#boss-modal', aberta la em cima pra ler
                 # quem esta pronto) e o Helper sao os dois modais - o jogo nao
                 # deixa abrir o Helper com a lista ainda aberta por cima
@@ -3371,7 +3383,16 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                 # (com o filtro 'Prontos' de novo) antes de seguir pro combate.
                 page.keyboard.press("Escape")
                 time.sleep(0.3)
-                BOSS_AMULET_MEMORY["changed"] = equip_boss_amulet(page, log)
+                changed, verified = equip_boss_amulet(page, log)
+                BOSS_AMULET_MEMORY["changed"] = merge_amulet_changed(BOSS_AMULET_MEMORY["changed"], changed)
+                BOSS_AMULET_MEMORY["verified"] = verified
+                if not verified:
+                    # GARANTIA: chefe 'stone_skin' so' e' enfrentado com o amuleto
+                    # CONFIRMADO no Helper. Pula ele (e os demais 'stone_skin') nesta
+                    # rodada e tenta de novo em BOSS_AMULET_RETRY_SECONDS.
+                    amulet_blocked = True
+                    log(f"  ATENCAO: nao consegui confirmar o '{BOSS_AMULET_ITEM}' equipado - NAO vou enfrentar '{target_name}' (nem outros chefes Stone Skin) sem ele; nova tentativa em {BOSS_AMULET_RETRY_SECONDS // 60}min.")
+                    continue  # a lista ja foi fechada (Escape) - o topo do laco reabre e escolhe outro alvo
                 try:
                     click_open_wave(page, open_selector)
                     page.click(boss_menu_selector, timeout=3000)
@@ -3410,9 +3431,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                 sequence_started = time.monotonic()
             fought = fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector)
             if not fought:
-                if BOSS_AMULET_MEMORY["changed"]:
-                    revert_boss_amulet(page, log, BOSS_AMULET_MEMORY["changed"])
-                    BOSS_AMULET_MEMORY["changed"] = {}
+                restore_boss_amulet(page, log)
                 if fought_any:
                     read_bosstiary_kills(page, log)
                 return False
@@ -3436,12 +3455,9 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
             # base da sugestao de quantas pocoes cobrem a lista inteira.
             record_boss_run(time.monotonic() - sequence_started, fights)
             log(f"  Sequencia de chefes concluida em {(time.monotonic() - sequence_started) / 60:.1f}min ({fights} chefe(s)).")
-        # sequencia de chefes acabou (nenhum pronto restante) - se o amuleto
-        # foi trocado pro Stone Skin em algum ponto dela, volta pro que
-        # estava antes AGORA, uma unica vez pra sequencia inteira.
-        if BOSS_AMULET_MEMORY["changed"]:
-            revert_boss_amulet(page, log, BOSS_AMULET_MEMORY["changed"])
-            BOSS_AMULET_MEMORY["changed"] = {}
+        # (o amuleto Stone Skin volta ao original mais abaixo, DEPOIS de ler os
+        # cooldowns e fechar a lista de chefes - aberta por cima, ela
+        # interceptava o clique do Helper e o amuleto nunca voltava.)
 
         # nenhum chefe selecionado esta pronto agora. Antes de fechar, desliga o
         # filtro 'Prontos' pra ver o cooldown real de cada um marcado (o jogo
@@ -3499,7 +3515,8 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         else:
             if wait_seconds is None:
                 wait_seconds = BOSS_COOLDOWN_SECONDS  # nao deu pra ler (ex: 'Sem cargas') - cai no chute de seguranca
-            log(f"  Nenhum chefe marcado esta pronto - proxima consulta em ~{wait_seconds / 3600:.1f}h.")
+            if not amulet_blocked:
+                log(f"  Nenhum chefe marcado esta pronto - proxima consulta em ~{wait_seconds / 3600:.1f}h.")
             # guarda o horario real (sem a margem) pra GUI exibir igual ao jogo -
             # a margem abaixo e so pra CONSULTAR um pouco antes, por seguranca,
             # nao deve aparecer pro usuario como se fosse o tempo real restante.
@@ -3508,7 +3525,17 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
             BOSS_MEMORY["missed_estimate"] = had_real_estimate
 
         BOSS_MEMORY["next_check"] = time.monotonic() + wait_seconds
+        if amulet_blocked:
+            # chefes Stone Skin ficaram de fora por falta do amuleto confirmado:
+            # nao espera o cooldown longo - tenta de novo logo.
+            BOSS_MEMORY["next_check"] = time.monotonic() + BOSS_AMULET_RETRY_SECONDS
+            BOSS_MEMORY["display_next_check"] = BOSS_MEMORY["next_check"]
+            BOSS_MEMORY["missed_estimate"] = False
+            log(f"  Chefes Stone Skin pulados (amuleto nao confirmado) - nova consulta em {BOSS_AMULET_RETRY_SECONDS // 60}min.")
         recover(page, log)
+        # sequencia de chefes acabou (nenhum pronto restante): volta o amuleto
+        # que foi trocado pro Stone Skin, uma unica vez pra sequencia inteira.
+        restore_boss_amulet(page, log)
         if fought_any:
             # atualiza o placar (Bosstiary) UMA VEZ so, depois de todos os
             # combates dessa chamada - nao a cada chefe (evita reabrir o
@@ -3525,6 +3552,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                 return_to_default_hunt(page, log, force=True)
         return True
 
+    restore_boss_amulet(page, log)
     if fought_any:
         read_bosstiary_kills(page, log)
         if not GUILD_TASK_MEMORY.get("grinding"):
@@ -3630,27 +3658,104 @@ def open_helper_equip_amulet(page, char_label, preset_label, log):
     clique podia mirar a barra de baixo (bloqueada) e travar - ou, pior,
     'active_char' podia ler o personagem que esta JOGANDO no momento em vez
     do que o Helper esta de fato mostrando, fazendo achar que ja estava no
-    personagem certo e pular a troca (o Helper abria mas nao alterava nada)."""
-    try:
-        if not page.eval_on_selector("#helper-modal", "el => !el.className.includes('hidden')"):
-            page.click("#tab-helper", timeout=3000)
+    personagem certo e pular a troca (o Helper abria mas nao alterava nada).
+
+    BUG CONFIRMADO no codigo do jogo (e corrigido): '#tab-helper' ALTERNA o
+    estado 'helperOpen' do jogo (classe 'on' no proprio '#tab-helper'), e o
+    modal fica escondido tambem quando o seletor de item esta aberto ou a
+    lista de personagens ainda ressincroniza (apos um combate de chefe).
+    Decidir pela classe 'hidden' do modal e clicar fazia FECHAR um Helper que
+    o jogo achava aberto - o clique seguinte batia em elemento 'not visible'
+    (erro dos logs, e o Stone Skin nunca era trocado). Ver 'ensure_helper_open'.
+    Tenta ate 3 vezes (reabrindo o Helper) antes de desistir."""
+    last_error = None
+    for _ in range(3):
+        try:
+            if not ensure_helper_open(page):
+                raise RuntimeError("o Helper nao ficou visivel")
+            active_char = page.eval_on_selector("#helper-modal .im-card .bar-char.active span", "el => el.textContent")
+            if active_char != char_label:
+                page.click(f'#helper-modal .im-card .bar-char:has(span:text-is("{char_label}"))', timeout=3000)
+                time.sleep(0.3)
+            active_tab = page.eval_on_selector(".helper-profilebtn.on", "el => el.textContent")
+            if active_tab != preset_label:
+                page.click(f'.helper-profilebtn:has-text("{preset_label}")', timeout=3000)
+                time.sleep(0.3)
+            active_menu = page.eval_on_selector(".helper-menubtn.on", "el => el.textContent")
+            if not active_menu or "Equipamento" not in active_menu:
+                page.click('.helper-menubtn:has-text("Equipamento")', timeout=3000)
+                time.sleep(0.3)
+            return True
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            last_error = error
             time.sleep(0.5)
-        active_char = page.eval_on_selector("#helper-modal .im-card .bar-char.active span", "el => el.textContent")
-        if active_char != char_label:
-            page.click(f'#helper-modal .im-card .bar-char:has(span:text-is("{char_label}"))', timeout=3000)
-            time.sleep(0.3)
-        active_tab = page.eval_on_selector(".helper-profilebtn.on", "el => el.textContent")
-        if active_tab != preset_label:
-            page.click(f'.helper-profilebtn:has-text("{preset_label}")', timeout=3000)
-            time.sleep(0.3)
-        active_menu = page.eval_on_selector(".helper-menubtn.on", "el => el.textContent")
-        if not active_menu or "Equipamento" not in active_menu:
-            page.click('.helper-menubtn:has-text("Equipamento")', timeout=3000)
-            time.sleep(0.3)
-        return True
-    except Exception as error:
-        log(f"  Erro ao abrir Helper ({char_label}/{preset_label}): {error}")
-        return False
+    log(f"  Erro ao abrir Helper ({char_label}/{preset_label}): {last_error}")
+    return False
+
+
+def helper_state(page):
+    """{'on': o jogo considera o Helper aberto (classe 'on' em '#tab-helper'),
+    'visible': o modal esta de fato na tela}. Os dois podem divergir (seletor
+    de item aberto por cima, ressincronizacao dos personagens)."""
+    return page.evaluate(
+        """() => {
+            const modal = document.getElementById('helper-modal');
+            const tab = document.getElementById('tab-helper');
+            return {
+                on: !!tab && tab.classList.contains('on'),
+                visible: !!modal && !modal.classList.contains('hidden') && modal.getClientRects().length > 0,
+            };
+        }"""
+    )
+
+
+def wait_helper_visible(page, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if helper_state(page)["visible"]:
+            return True
+        time.sleep(0.25)
+    return helper_state(page)["visible"]
+
+
+def ensure_helper_open(page):
+    """Deixa o modal do Helper VISIVEL e parado (True) ou desiste (False).
+    '#tab-helper' alterna, entao so' clica quando o jogo considera o Helper
+    FECHADO; se considera aberto mas o modal esta escondido, espera ele
+    voltar (ressincronizacao) e, se nao voltar, Escape (fecha o seletor de
+    item/o proprio Helper) e reavalia."""
+    for _ in range(5):
+        state = helper_state(page)
+        if state["visible"]:
+            time.sleep(0.4)  # animacao de abertura - o clique exige elemento parado
+            if helper_state(page)["visible"]:
+                return True
+            continue
+        if state["on"]:
+            if wait_helper_visible(page, 2.5):
+                continue
+            page.keyboard.press("Escape")
+            time.sleep(0.5)
+            continue
+        page.click("#tab-helper", timeout=3000)
+        wait_helper_visible(page, 2.5)
+    return False
+
+
+def close_helper(page):
+    """Fecha o Helper e confirma (o jogo guarda 'helperOpen' - um Helper
+    esquecido aberto trava o clique de todo o resto)."""
+    for _ in range(3):
+        page.keyboard.press("Escape")
+        time.sleep(0.4)
+        try:
+            state = helper_state(page)
+        except Exception:
+            return
+        if not state["on"] and not state["visible"]:
+            return
 
 
 def read_helper_amulet(page, field_cls):
@@ -3670,6 +3775,11 @@ def set_helper_amulet(page, field_cls, item_name, log):
     se o item nao esta disponivel agora - nesse caso fecha o picker (Escape)
     sem mudar nada, do jeito que o usuario pediu."""
     try:
+        # o Helper ja fechou sozinho depois do 1o item trocado (logs reais) -
+        # reabre/reposiciona antes de clicar no slot, em vez de bater num
+        # elemento 'not visible'.
+        if not helper_state(page)["visible"] and not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+            return False
         page.click(f'.helper-equipfield:has(.fl.{field_cls}) .helper-equipitem', timeout=3000)
         time.sleep(0.4)
         search = page.query_selector('.pick-search')
@@ -3683,6 +3793,7 @@ def set_helper_amulet(page, field_cls, item_name, log):
             return False
         page.click('.sp-list.sp-book-list .sp-book-row button', timeout=3000)
         time.sleep(0.3)
+        wait_helper_visible(page, 3)  # o seletor esconde o Helper; volta ao escolher
         return True
     except Exception as error:
         log(f"  Erro ao trocar amuleto '{field_cls}' pra '{item_name}': {error}")
@@ -3742,61 +3853,145 @@ def equip_boss_amulet(page, log):
     o amuleto Emergencial e Padrao do EK (preset Boss, no Helper) pro Stone
     Skin Amulet, pra aguentar mais dano, e deixa os 2 gatilhos de % de vida
     (ver BOSS_AMULET_EQUIP_PCT/RESTORE_PCT) mais agressivos. So' troca o item
-    que de fato achar na pouch/mochila - se nao tiver, mantem o que ja
-    estava (sem reclamar, conforme pedido). Retorna um dict
-    {'items': {'emer'/'padr': nome_original, ...}, 'thresholds': (equip_pct,
-    restore_pct) originais ou None} - vazio ({}) so' se nem conseguiu abrir o
-    Helper. 'revert_boss_amulet' usa esse dict pra desfazer tudo depois."""
-    if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
-        # 'open_helper_equip_amulet' pode ter aberto o painel Helper e falhado
-        # so' num clique seguinte (ex: bloqueado por outro modal ainda aberto
-        # por cima) - fecha de qualquer jeito antes de desistir, senao o
-        # Helper fica aberto por cima de tudo travando o resto do bot ate a
-        # proxima recuperacao.
-        page.keyboard.press("Escape")
-        page.keyboard.press("Escape")
-        return {}
+    que de fato achar na pouch/mochila.
 
+    Retorna (changed, verified):
+    - changed: {'items': {'emer'/'padr': nome_original}, 'thresholds':
+      (equip_pct, restore_pct) originais ou None} - o que 'revert_boss_amulet'
+      precisa pra desfazer; {} se nem abriu o Helper.
+    - verified: True SO' se, relendo o Helper depois da troca, pelo menos um
+      dos 2 slots mostra o Stone Skin (a pouch costuma ter 1 so' - o 2o slot
+      pode legitimamente ficar de fora). E' o que libera o combate: sem isso
+      o chefe 'stone_skin' nao e' enfrentado (ver o passo de chefes).
+    Tenta ate 3 vezes (o Helper ja fechou sozinho no meio da troca em logs
+    reais)."""
     items = {}
-    for field_cls in ("emer", "padr"):
-        original = read_helper_amulet(page, field_cls)
-        if original == BOSS_AMULET_ITEM:
-            continue  # ja esta com o item certo - nada a trocar/lembrar
-        if set_helper_amulet(page, field_cls, BOSS_AMULET_ITEM, log):
-            items[field_cls] = original
-            log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} trocado pra '{BOSS_AMULET_ITEM}' (era '{original}').")
-
-    orig_equip_pct, orig_restore_pct = read_helper_amulet_thresholds(page)
     thresholds = None
-    if orig_equip_pct is not None:
-        thresholds = (orig_equip_pct, orig_restore_pct)
-        if set_helper_amulet_thresholds(page, BOSS_AMULET_EQUIP_PCT, BOSS_AMULET_RESTORE_PCT, log):
-            log(f"  % do amuleto do {BOSS_AMULET_CHAR} ajustada pra {BOSS_AMULET_EQUIP_PCT}%/{BOSS_AMULET_RESTORE_PCT}% (era {orig_equip_pct}%/{orig_restore_pct}%).")
+    verified = False
+    for attempt in range(1, 4):
+        try:
+            if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+                continue
+            for field_cls in ("emer", "padr"):
+                original = read_helper_amulet(page, field_cls)
+                if original == BOSS_AMULET_ITEM:
+                    continue  # ja esta com o item certo - nada a trocar/lembrar
+                if set_helper_amulet(page, field_cls, BOSS_AMULET_ITEM, log):
+                    items.setdefault(field_cls, original)
+                    log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} trocado pra '{BOSS_AMULET_ITEM}' (era '{original}').")
 
-    page.keyboard.press("Escape")
-    page.keyboard.press("Escape")
-    return {"items": items, "thresholds": thresholds}
+            if thresholds is None and open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+                orig_equip_pct, orig_restore_pct = read_helper_amulet_thresholds(page)
+                if orig_equip_pct is not None:
+                    thresholds = (orig_equip_pct, orig_restore_pct)
+                    if set_helper_amulet_thresholds(page, BOSS_AMULET_EQUIP_PCT, BOSS_AMULET_RESTORE_PCT, log):
+                        log(f"  % do amuleto do {BOSS_AMULET_CHAR} ajustada pra {BOSS_AMULET_EQUIP_PCT}%/{BOSS_AMULET_RESTORE_PCT}% (era {orig_equip_pct}%/{orig_restore_pct}%).")
+
+            # confere de verdade: FECHA e reabre o Helper (o jogo so' redesenha o
+            # painel ao abrir - o DOM antigo guarda o nome velho mesmo fechado)
+            # e RELE os 2 slots.
+            close_helper(page)
+            if open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+                slots = {field_cls: read_helper_amulet(page, field_cls) for field_cls in ("emer", "padr")}
+                if BOSS_AMULET_ITEM in slots.values():
+                    verified = True
+                    break
+                log(f"  Stone Skin nao apareceu nos slots do amuleto (emer='{slots['emer']}', padr='{slots['padr']}') - tentativa {attempt}/3.")
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            log(f"  Erro na troca do amuleto (tentativa {attempt}/3): {error}")
+        # recomeca limpo: fecha o que estiver aberto (seletor de item, Helper)
+        try:
+            close_helper(page)
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+
+    try:
+        close_helper(page)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+    changed = {"items": items, "thresholds": thresholds} if (items or thresholds) else {}
+    return changed, verified
 
 
 def revert_boss_amulet(page, log, changed):
     """Desfaz a troca feita por 'equip_boss_amulet' - volta cada slot de item
     que foi de fato alterado pro que estava antes, e as 2 % de ativacao pro
-    que estavam antes tambem."""
+    que estavam antes tambem. Retorna True se tudo voltou (ou ja estava
+    como antes); False se algo ficou pra tras."""
     if not changed:
+        return True
+    ok = True
+    try:
+        if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+            return False
+        for field_cls, name in (changed.get("items") or {}).items():
+            if not name:
+                continue
+            if read_helper_amulet(page, field_cls) == name:
+                continue  # ja voltou (tentativa anterior)
+            if set_helper_amulet(page, field_cls, name, log):
+                log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} revertido pra '{name}'.")
+            else:
+                ok = False
+        thresholds = changed.get("thresholds")
+        if thresholds is not None:
+            if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+                return False
+            if set_helper_amulet_thresholds(page, thresholds[0], thresholds[1], log):
+                log(f"  % do amuleto do {BOSS_AMULET_CHAR} revertida pra {thresholds[0]}%/{thresholds[1]}%.")
+            else:
+                ok = False
+    finally:
+        try:
+            close_helper(page)
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+    return ok
+
+
+def merge_amulet_changed(old, new):
+    """Junta o que 'equip_boss_amulet' guardou em tentativas diferentes da
+    mesma sequencia - o valor ORIGINAL (o mais antigo) sempre vence, senao a
+    2a tentativa gravaria o Stone Skin / 85-90% como se fossem o original."""
+    if not old:
+        return new
+    if not new:
+        return old
+    return {
+        "items": {**(new.get("items") or {}), **(old.get("items") or {})},
+        "thresholds": old.get("thresholds") or new.get("thresholds"),
+    }
+
+
+def restore_boss_amulet(page, log):
+    """Devolve o amuleto do EK ao que era antes do Stone Skin. A lista de
+    chefes ('#boss-modal') TEM que estar fechada (CONFIRMADO nos logs: aberta
+    por cima, o clique do Helper era interceptado e o amuleto nunca voltava).
+    Se nao conseguir, mantem a lembranca do original e tenta de novo no fim
+    da proxima sequencia (desiste na 3a falha, avisando)."""
+    changed = BOSS_AMULET_MEMORY["changed"]
+    BOSS_AMULET_MEMORY["verified"] = False  # o que o Helper tem agora e' incerto ate reler
+    if not changed:
+        BOSS_AMULET_MEMORY["revert_fails"] = 0
         return
-    if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
+    page.keyboard.press("Escape")
+    time.sleep(0.4)
+    if revert_boss_amulet(page, log, changed):
+        BOSS_AMULET_MEMORY["changed"] = {}
+        BOSS_AMULET_MEMORY["revert_fails"] = 0
         return
-    for field_cls, name in (changed.get("items") or {}).items():
-        if not name:
-            continue
-        if set_helper_amulet(page, field_cls, name, log):
-            log(f"  Amuleto {field_cls} do {BOSS_AMULET_CHAR} revertido pra '{name}'.")
-    thresholds = changed.get("thresholds")
-    if thresholds is not None:
-        if set_helper_amulet_thresholds(page, thresholds[0], thresholds[1], log):
-            log(f"  % do amuleto do {BOSS_AMULET_CHAR} revertida pra {thresholds[0]}%/{thresholds[1]}%.")
-    page.keyboard.press("Escape")
-    page.keyboard.press("Escape")
+    BOSS_AMULET_MEMORY["revert_fails"] += 1
+    if BOSS_AMULET_MEMORY["revert_fails"] >= 3:
+        log(f"  ATENCAO: nao consegui devolver o amuleto original do {BOSS_AMULET_CHAR} (era {changed.get('items')}). Confira o Helper manualmente.")
+        BOSS_AMULET_MEMORY["changed"] = {}
+        BOSS_AMULET_MEMORY["revert_fails"] = 0
+    else:
+        log(f"  Nao consegui devolver o amuleto do {BOSS_AMULET_CHAR} agora - tento de novo no fim da proxima sequencia.")
 
 
 def click_guild_task_button(page, sec_selector, card_selector, name_sel, foot_sel, matched_class, task_name, keyword, log, retries=3):
