@@ -211,6 +211,22 @@ linha.
   quase em tempo real. Oportunidade que encerrou ou passou do preço justo sai
   da lista. Falha de rede num item não o remove (tenta de novo no ciclo seguinte).
 
+### Manter tudo atualizado (painel dentro do bot)
+
+- O poller sobe junto com o bot (janela do GUI), **independe de o painel estar
+  aberto**; fechar o app para a coleta. Ao voltar depois de mais de
+  `catchup_gap_hours` (2 h) parado, a coleta de vendas volta página por página
+  até alcançar o que já conhece (até `backfill_pages`), sem deixar buraco no
+  histórico (a API só guarda ~7 dias).
+- **Codex x market**: com o bot rodando, o mapa do Codex (`codex_progress.json`)
+  é relido a cada 30 min (`CODEX_BOT_SYNC_SECONDS` no `gui.py`), não só ao abrir
+  o painel; se a leitura falhar (ex.: Mercado do jogo aberto por cima), tenta de
+  novo em 5 min. O mapa fica velho enquanto o bot estiver parado.
+- Consulta ao vivo (oportunidades/acompanhando/posições): as chamadas
+  `auction.item` saem em paralelo (`api.items_bulk`).
+- `perf.log` (ao lado do banco) registra só o que foge do normal: varredura >45 s,
+  consulta ao vivo >15 s, `/api/state` >1,5 s, poller atrasado (app/PC parado).
+
 ## CLI (sem painel)
 
 ```bash

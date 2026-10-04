@@ -4,6 +4,7 @@ import math
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 BASE = "https://baiakidle.com/api/trpc/"
 UA = "baiak-market-alert/1.0 (rastreador pessoal de precos; somente leitura)"
@@ -34,6 +35,25 @@ def config():
 def item(auction_id):
     """Estado atual de um unico leilao (preco, lances, status, endsAt)."""
     return _call("auction.item", {"id": int(auction_id)}, timeout=8)
+
+
+def items_bulk(auction_ids, workers=5):
+    """'item' de VARIOS leiloes em paralelo (o gargalo e' a rede: em serie, N
+    leiloes monitorados custavam N idas e voltas a cada 10 s e atrasavam a
+    varredura). Retorna {id: linha | Exception} - quem chama trata cada erro
+    do mesmo jeito que tratava o 'item' avulso."""
+    ids = list(dict.fromkeys(int(i) for i in auction_ids))
+    if not ids:
+        return {}
+
+    def one(i):
+        try:
+            return i, item(i)
+        except Exception as error:  # noqa: BLE001 - devolve o erro pra quem chamou decidir
+            return i, error
+
+    with ThreadPoolExecutor(max_workers=min(workers, len(ids))) as pool:
+        return dict(pool.map(one, ids))
 
 
 def history(page=1, per_page=100, q=None, type=None):

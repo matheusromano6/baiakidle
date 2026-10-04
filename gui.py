@@ -25,6 +25,13 @@ LOG_DIR = os.path.join(bot.data_dir(), "logs")
 # vezes nao fica mexendo no Codex do jogo toda hora (o botao 'Atualizar Codex'
 # do painel ignora esse intervalo).
 CODEX_AUTO_SYNC_MIN_SECONDS = 10 * 60
+# Com o BOT RODANDO o mapa do Codex tambem e' refeito sozinho a cada
+# CODEX_BOT_SYNC_SECONDS, sem depender de o painel do market estar aberto (antes
+# so' atualizava ao abrir o painel e o cruzamento Codex x leiloes ficava velho
+# por horas). Se a leitura falhar (ex: Mercado do jogo aberto por cima), tenta
+# de novo apos CODEX_BOT_RETRY_SECONDS.
+CODEX_BOT_SYNC_SECONDS = 30 * 60
+CODEX_BOT_RETRY_SECONDS = 5 * 60
 
 # painel de mercado (market/server.py) roda junto do bot, na mesma janela -
 # antes eram 2 processos separados que o usuario tinha que abrir na mao cada
@@ -103,6 +110,7 @@ class BotGUI:
 
         self.market_url = None
         self.codex_sync_lock = threading.Lock()
+        self.codex_last_attempt = 0.0
         self.start_market_server()
 
         self.build_header()
@@ -114,6 +122,7 @@ class BotGUI:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll_log_queue)
         self.root.after(500, self.poll_status)
+        self.root.after(60_000, self.codex_market_tick)
 
     # ---------- layout ----------
 
@@ -655,7 +664,20 @@ class BotGUI:
             text_color="#04140a",
         ).pack(padx=20, pady=16, fill="x")
 
-    def sync_codex_for_market(self, automatic=False):
+    def codex_market_tick(self):
+        """A cada minuto: com o bot rodando, deixa o mapa do Codex do market
+        em dia (ver CODEX_BOT_SYNC_SECONDS) - a leitura em si decide se ja
+        esta na hora."""
+        try:
+            if self.market_url and self.thread is not None and self.thread.is_alive():
+                threading.Thread(
+                    target=lambda: self.sync_codex_for_market(automatic=True, periodic=True),
+                    daemon=True,
+                ).start()
+        finally:
+            self.root.after(60_000, self.codex_market_tick)
+
+    def sync_codex_for_market(self, automatic=False, periodic=False):
         """Le o Codex da conta (so' le, nunca entrega nada) e grava o mapa pro
         market cruzar o que falta com os leiloes de empilhaveis. Bloqueia ate
         acabar - chame de uma thread. Com o bot rodando, a leitura e' feita na
@@ -675,11 +697,15 @@ class BotGUI:
                 if not bot_running and not bot.is_debug_port_open():
                     self.log("Codex nao mapeado pro market: abra o jogo (ou inicie o bot) e use 'Atualizar Codex' no painel.")
                     return
+                min_age = CODEX_BOT_SYNC_SECONDS if periodic else CODEX_AUTO_SYNC_MIN_SECONDS
                 try:
-                    if time.time() - os.path.getmtime(path) < CODEX_AUTO_SYNC_MIN_SECONDS:
+                    if time.time() - os.path.getmtime(path) < min_age:
                         return
                 except OSError:
                     pass
+                if periodic and time.time() - self.codex_last_attempt < CODEX_BOT_RETRY_SECONDS:
+                    return
+            self.codex_last_attempt = time.time()
             self.log("Mapeando o Codex da conta pro market...")
             if bot_running:
                 data = bot.request_from_bot(bot.read_codex_progress, timeout=240)
@@ -688,7 +714,8 @@ class BotGUI:
             if data and data.get("entries"):
                 bot.save_codex_progress(data, path)
             else:
-                self.log("  Nao consegui ler o Codex pro market - mantendo o ultimo mapa salvo.")
+                retry = f" (nova tentativa em {CODEX_BOT_RETRY_SECONDS // 60} min)" if periodic and bot_running else ""
+                self.log(f"  Nao consegui ler o Codex pro market - mantendo o ultimo mapa salvo{retry}.")
         except Exception as error:
             self.log(f"  Erro ao mapear o Codex pro market: {error}")
         finally:

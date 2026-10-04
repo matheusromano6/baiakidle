@@ -25,7 +25,7 @@ está atualizado). Só faça commit/push/release quando o usuário pedir.
 
 ## 1. Arquivos pessoais NUNCA vão no build
 `market.db*`, `backups/`, `chrome_profile/`, `config.json`, `codex_progress.json*`,
-`__pycache__`, handoff pdf, `*.state.json`, `settings*.json`, `routines*.json`.
+`perf.log`, `__pycache__`, handoff pdf, `*.state.json`, `settings*.json`, `routines*.json`.
 
 Se criar um arquivo novo de DADOS/pessoal no `market/`, adicione nas TRÊS listas (mantenha
 sincronizadas):

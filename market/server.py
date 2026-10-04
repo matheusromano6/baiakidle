@@ -60,6 +60,22 @@ def _backup_db(path, keep=15):
     print(f"[backup] {dst.name}")
 
 
+PERF_LOG = Path(CFG["db_path"]).parent / "perf.log"
+
+
+def perf_note(msg):
+    """Registra so' o que sai do normal (varredura/consulta lenta, poller
+    atrasado) em 'perf.log' ao lado do banco - o painel roda dentro do bot e
+    sem isso nao ha como saber, depois, o que travou. Corta o arquivo em ~200 KB."""
+    try:
+        if PERF_LOG.exists() and PERF_LOG.stat().st_size > 200_000:
+            PERF_LOG.write_text("", encoding="utf-8")
+        with PERF_LOG.open("a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%d/%m %H:%M:%S')} {msg}\n")
+    except OSError:
+        pass
+
+
 STORE = Store(CFG["db_path"])
 ACTIVE = []            # ultimo snapshot de leiloes ativos (pra concorrencia)
 ACTIVE_AT = 0
@@ -764,7 +780,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/" or path == "/index.html":
             return self._send(DASHBOARD.encode(), ctype="text/html; charset=utf-8")
         if path == "/api/state":
-            return self._send(build_state())
+            t0 = time.time()
+            data = build_state()
+            if time.time() - t0 > 1.5:
+                perf_note(f"/api/state levou {time.time() - t0:.1f}s")
+            return self._send(data)
         if path == "/api/appraise":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -858,25 +878,43 @@ def poller():
     first = STORE.get_setting("backfilled") != "1"
     if first:
         print("[poller] backfill inicial (~7 dias de historico), pode levar 1 min...")
+    loop_end = time.time()
     while True:
         try:
             now = time.time()
+            if now - loop_end > CFG["track_poll_seconds"] * 3 + 30:
+                # o poller devia voltar a cada ~track_poll_seconds: um atraso grande
+                # = processo parado/sem CPU (PC dormiu, app travado) - avisa.
+                perf_note(f"poller atrasado: {now - loop_end:.0f}s entre ciclos")
             if now - last_scan >= CFG["poll_seconds"]:
                 global ACTIVE, ACTIVE_AT
                 ACTIVE = scanner.collect(CFG, STORE)
+                collected = time.time()
                 ACTIVE_AT = int(now * 1000)
                 opps = scanner.run_scan(CFG, STORE, active=ACTIVE)
                 scanner.refresh_bounties(CFG, STORE, ACTIVE)
                 last_scan = now
                 STORE.set_setting("last_scan", int(now * 1000))
+                took = time.time() - now
+                if took > 45:
+                    perf_note(f"varredura lenta: {took:.0f}s (coleta {collected - now:.0f}s, "
+                              f"analise {time.time() - collected:.0f}s)")
                 print(f"[scan] {len(opps)} oportunidades | "
                       f"{time.strftime('%H:%M:%S')}")
+            t_fast = time.time()
             scanner.refresh_opportunities(CFG, STORE)     # preco ao vivo do que monitora
             scanner.refresh_watches(CFG, STORE)           # itens acompanhados pelo id
             if STORE.open_auction_positions():
                 scanner.refresh_positions(CFG, STORE)
+            if time.time() - t_fast > 15:
+                perf_note(f"consulta ao vivo lenta: {time.time() - t_fast:.0f}s")
         except Exception as e:  # noqa: BLE001
             print(f"[poller] erro: {e}")
+            perf_note(f"poller erro: {e}")
+            # falha na varredura (rede fora, API instavel): tenta de novo em ~30 s,
+            # nao a cada ciclo de 10 s (cada tentativa pagina o mercado inteiro).
+            last_scan = max(last_scan, time.time() - CFG["poll_seconds"] + 30)
+        loop_end = time.time() + CFG["track_poll_seconds"]
         time.sleep(CFG["track_poll_seconds"])
 
 

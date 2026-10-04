@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.17.3"
+VERSION = "4.17.4"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1830,6 +1830,13 @@ def open_codex(page):
         page.wait_for_timeout(300)
     if page.is_visible(".codex-side"):
         return False
+    if page.is_visible("#auction-modal"):
+        # CONFIRMADO nos logs: o Mercado/leilao do jogo aberto por cima
+        # intercepta o clique em 'Progressao' (timeout de 3s e a leitura do
+        # Codex pro market falhava, deixando o mapa velho por horas). Falha
+        # na hora e com motivo claro; 'dismiss_blocking_overlays' fecha esse
+        # modal depois de AUCTION_MODAL_GRACE_SECONDS e quem chamou tenta de novo.
+        raise RuntimeError("o Mercado/leilao do jogo esta aberto")
     page.click("#tab-progressao", timeout=3000)
     page.click("#tab-codex", timeout=3000)
     page.wait_for_selector(".codex-side", timeout=4000)

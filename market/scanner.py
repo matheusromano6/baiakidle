@@ -97,6 +97,10 @@ DEFAULTS = {
     "trend_up": 0.10,
     "backfill_pages": 200,
     "refresh_pages": 8,
+    # parado por mais que isso (app fechado/PC desligado), a proxima coleta
+    # volta pagina por pagina ate alcançar o que ja conhece (ate backfill_pages)
+    # em vez de parar em refresh_pages e deixar um buraco no historico.
+    "catchup_gap_hours": 2,
     "rake_pct": 0.10,
     "listing_fee_gold": 5_000_000,
     "deduct_listing_fee": True,
@@ -119,7 +123,10 @@ def load_config():
 def collect(cfg, store, verbose=False):
     """Puxa vendas novas do historico e o snapshot de leiloes ativos."""
     first = store.get_setting("backfilled") != "1"
-    max_pages = cfg["backfill_pages"] if first else cfg["refresh_pages"]
+    last_scan = float(store.get_setting("last_scan", 0) or 0)
+    stale = (not last_scan
+             or analyze.now_ms() - last_scan > cfg["catchup_gap_hours"] * 3_600_000)
+    max_pages = cfg["backfill_pages"] if (first or stale) else cfg["refresh_pages"]
     inserted = 0
     for pg in range(1, max_pages + 1):
         data = api.history(page=pg, per_page=100)
@@ -238,13 +245,14 @@ def refresh_opportunities(cfg, store):
     """Poll rapido: atualiza preco/lances das oportunidades ja detectadas
     consultando cada leilao individualmente (barato)."""
     now = analyze.now_ms()
-    for r in store.list_opportunities(active_only=True):
-        try:
-            row = api.item(r["auction_id"])
-        except RuntimeError:              # tRPC: anuncio nao encontrado -> sumiu
+    rows = store.list_opportunities(active_only=True)
+    fetched = api.items_bulk(r["auction_id"] for r in rows)
+    for r in rows:
+        row = fetched[r["auction_id"]]
+        if isinstance(row, RuntimeError):     # tRPC: anuncio nao encontrado -> sumiu
             store.drop_opportunity(r["auction_id"])
             continue
-        except Exception:  # noqa: BLE001 - rede/timeout: tenta de novo no proximo ciclo
+        if isinstance(row, Exception):        # rede/timeout: tenta de novo no proximo ciclo
             continue
         if row.get("status") != "active" or (row.get("endsAt") or 0) <= now:
             log = store.get_opp_log(r["auction_id"])
@@ -285,13 +293,14 @@ def refresh_watches(cfg, store):
     uma estimativa que faltava quando voce adicionou)."""
     now = analyze.now_ms()
     table = items.get(cfg["items_refresh_days"])
-    for w in store.active_watch():
-        try:
-            row = api.item(w["auction_id"])
-        except RuntimeError:
+    watches = store.active_watch()
+    fetched = api.items_bulk(w["auction_id"] for w in watches)
+    for w in watches:
+        row = fetched[w["auction_id"]]
+        if isinstance(row, RuntimeError):
             store.update_watch(w["auction_id"], status="removido")
             continue
-        except Exception:  # noqa: BLE001
+        if isinstance(row, Exception):
             continue
         fields = {"current_price": row.get("currentPrice"),
                   "bid_count": row.get("bidCount"),
@@ -366,11 +375,12 @@ def refresh_bounties(cfg, store, active):
 def refresh_positions(cfg, store):
     """Fast poll: atualiza o estado do leilao de cada posicao aberta."""
     now = analyze.now_ms()
-    for pos in store.open_auction_positions():
-        try:
-            row = api.item(pos["auction_id"])
-        except Exception as e:  # noqa: BLE001
-            print(f"[pos {pos['id']}] {e}")
+    positions = store.open_auction_positions()
+    fetched = api.items_bulk(pos["auction_id"] for pos in positions)
+    for pos in positions:
+        row = fetched[pos["auction_id"]]
+        if isinstance(row, Exception):
+            print(f"[pos {pos['id']}] {row}")
             continue
         fields = {
             "last_auction_price": row.get("currentPrice"),
