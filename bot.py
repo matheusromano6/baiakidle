@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.19.1"
+VERSION = "4.19.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -4056,9 +4056,32 @@ def set_helper_amulet(page, field_cls, item_name, log):
         if not count:
             page.keyboard.press("Escape")
             return False
-        page.click('.sp-list.sp-book-list .sp-book-row button', timeout=3000)
+        # CONFIRMADO ao vivo (v4.19.2): cada linha tem 2 botoes - 'eq-fav' ("Favoritar",
+        # a estrela) PRIMEIRO e 'Usar' depois. O seletor antigo ('...row button') clicava
+        # na estrela: so' favoritava e o amuleto nunca era trocado (e o log dizia "trocado").
+        # Clica no 'Usar' da linha cujo NOME e' exatamente o item pedido.
+        safe_name = item_name.replace('"', '\\"')
+        use = page.locator(
+            f'.sp-list.sp-book-list .sp-book-row:has(.sp-book-name:text-is("{safe_name}")) button:has-text("Usar")')
+        if use.count() == 0:
+            page.keyboard.press("Escape")
+            return False
+        use.first.click(timeout=3000)
         time.sleep(0.3)
         wait_helper_visible(page, 3)  # o seletor esconde o Helper; volta ao escolher
+        # confere que o slot MUDOU de verdade (nao confia so' no clique) - o painel leva um
+        # instante pra redesenhar (CONFIRMADO: lendo na hora dava o nome antigo mesmo com a
+        # troca feita), entao espera ate' 3s o nome novo aparecer.
+        wanted = item_name.strip().casefold()
+        current = ""
+        for _ in range(10):
+            current = (read_helper_amulet(page, field_cls) or "").strip().casefold()
+            if current == wanted:
+                break
+            time.sleep(0.3)
+        if current != wanted:
+            log(f"  O slot '{field_cls}' continua com '{current}' apos escolher '{item_name}'.")
+            return False
         return True
     except Exception as error:
         log(f"  Erro ao trocar amuleto '{field_cls}' pra '{item_name}': {error}")
@@ -4089,27 +4112,37 @@ def set_helper_amulet_thresholds(page, equip_pct, restore_pct, log):
     """Ajusta os 2 selects de % do card de Amuleto (ver 'read_helper_amulet_thresholds').
     Se algum valor pedido nao existir como opcao (o jogo pode limitar o range),
     so' loga e deixa aquele select como estava - nao quebra o resto. Retorna
-    True so' se os 2 de fato foram ajustados (pra quem chama nao logar
-    'ajustada'/'revertida' quando na verdade falhou)."""
-    try:
-        selects = page.query_selector_all(".helper-equipcard .helper-sel")
-    except Exception as error:
-        log(f"  Erro ao achar os campos de % de ativacao do amuleto: {error}")
-        return False
-    if len(selects) < 2:
-        log("  Nao achei os campos de % de ativacao do amuleto.")
-        return False
+    True so' se os 2 de fato ficaram no valor pedido (pra quem chama nao logar
+    'ajustada'/'revertida' quando na verdade falhou).
+
+    CONFIRMADO ao vivo (v4.19.2): mudar o 1o select faz o Helper REDESENHAR e a
+    referencia guardada do 2o ficava velha ('Element is not attached to the DOM').
+    Por isso localiza cada select de novo na hora (locator), pula o que ja esta no
+    valor pedido e confere o resultado."""
+    labels = ("Equipar com vida abaixo de", "Restaurar com vida acima de")
+    targets = (str(equip_pct), str(restore_pct))
     ok = True
-    try:
-        selects[0].select_option(str(equip_pct), timeout=3000)
-    except Exception as error:
-        log(f"  Erro ao ajustar 'Equipar com vida abaixo de' pra {equip_pct}%: {error}")
-        ok = False
-    try:
-        selects[1].select_option(str(restore_pct), timeout=3000)
-    except Exception as error:
-        log(f"  Erro ao ajustar 'Restaurar com vida acima de' pra {restore_pct}%: {error}")
-        ok = False
+    for index, (label, target) in enumerate(zip(labels, targets)):
+        applied = False
+        for attempt in range(2):
+            try:
+                selects = page.locator(".helper-equipcard .helper-sel")
+                if selects.count() < 2:
+                    log("  Nao achei os campos de % de ativacao do amuleto.")
+                    return False
+                if selects.nth(index).input_value() == target:
+                    applied = True
+                    break
+                selects.nth(index).select_option(target, timeout=3000)
+                time.sleep(0.5)   # o Helper redesenha depois da mudanca
+                if selects.nth(index).input_value() == target:
+                    applied = True
+                    break
+            except Exception as error:
+                if attempt == 1:
+                    log(f"  Erro ao ajustar '{label}' pra {target}%: {error}")
+                time.sleep(0.5)
+        ok = ok and applied
     return ok
 
 
