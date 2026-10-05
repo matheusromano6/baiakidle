@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.19.0"
+VERSION = "4.19.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -5209,7 +5209,15 @@ def fetch_build_code(context, vocation, level, config, log):
     entre as opcoes disponiveis pra essa combinacao - senao deixa o valor que
     o proprio site ja escolheu sozinho. Fecha a aba antes de retornar. Retorna
     o codigo (string) ou None se der erro."""
-    site_page = context.new_page()
+    try:
+        site_page = context.new_page()
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        # CONFIRMADO ao vivo: o IdleDeck (Electron) nao suporta abrir aba extra
+        # ('Target.createTarget: Not supported'). Consulta o site num Chrome
+        # headless a parte, sem tocar no IdleDeck nem nos outros jogos dele.
+        return fetch_build_code_headless(vocation, level, config, log)
     try:
         site_page.goto("https://baiakidle-build-optimizer.pages.dev/", timeout=15000)
         site_page.click(f'.voc-choice:has-text("{vocation}")', timeout=5000)
@@ -5268,6 +5276,40 @@ def fetch_build_code(context, vocation, level, config, log):
         site_page.close()
 
 
+def fetch_build_code_headless(vocation, level, config, log):
+    """Mesma consulta de 'fetch_build_code', mas num Chrome INSTALADO em modo
+    headless (sem janela), numa thread propria (cada thread precisa do seu
+    proprio Playwright). Usado quando o navegador do jogo nao deixa abrir uma
+    aba nova (IdleDeck). Retorna o codigo ou None."""
+    result = {}
+
+    def work():
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(channel="chrome", headless=True)
+                try:
+                    result["code"] = fetch_build_code(browser.new_context(), vocation, level, config, log)
+                finally:
+                    browser.close()
+        except Exception as error:
+            log(f"  Erro ao consultar o otimizador de build em segundo plano: {error}")
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(120)
+    return result.get("code")
+
+
+def bring_game_to_front(page):
+    """Traz a aba do jogo pro primeiro plano (o Chrome throttla abas em 2o
+    plano). No IdleDeck NAO: ele ja desliga o throttling dos slots e o
+    'bringToFront' traria a janela do app pra frente (mesmo escondida na
+    bandeja/minimizada) e mexeria no foco dos outros jogos dele."""
+    if BROWSER_PROFILES[CURRENT_PROFILE].get("launcher") in ("idledeck", "idledeck_copy"):
+        return
+    page.bring_to_front()
+
+
 def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selector, vocation, log):
     """Abre Progressao > Build e seleciona, dentro dela, o personagem cujo
     'data-tip' contem 'vocation' (ex: 'Cibele Druid (Druid)' pra vocation
@@ -5282,7 +5324,7 @@ def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selec
         # em background, entao o React demora (ou nunca) atualiza a lista de
         # personagens. Traz a aba do jogo de volta pro primeiro plano antes de
         # mexer nela.
-        page.bring_to_front()
+        bring_game_to_front(page)
         click_open_wave(page, open_selector)
         page.click(tree_tab_selector, timeout=3000)
         page.wait_for_selector(char_selector, timeout=4000)
@@ -5417,7 +5459,7 @@ def execute_dom_auto_build_step(page, step, log):
         # relacao nenhuma com essa) - so traz a aba do jogo de volta pro
         # primeiro plano (o Chrome throttla renderizacao de abas em 2o plano
         # enquanto a aba do site otimizador ficou em foco).
-        page.bring_to_front()
+        bring_game_to_front(page)
 
         try:
             # o botao 'Importar' e um toggle (abre/fecha o campo de colar) - se
