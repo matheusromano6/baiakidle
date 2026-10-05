@@ -107,6 +107,9 @@ class BotGUI:
         self.settings_window = None
         self.default_hunt_label = None
         self.hunt_confirm_window = None
+        self.close_dialog = None
+        self.tray_icon = None
+        self.tray_queue = queue.Queue()
 
         self.market_url = None
         self.codex_sync_lock = threading.Lock()
@@ -119,7 +122,10 @@ class BotGUI:
         self.build_routines_panel()
         self.build_log_panel()
 
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.protocol("WM_DELETE_WINDOW", self.request_close)
+        if sys.platform == "win32":
+            self.root.bind("<Unmap>", self.on_window_unmap)
+            self.root.after(300, self.poll_tray_queue)
         self.root.after(100, self.poll_log_queue)
         self.root.after(500, self.poll_status)
         self.root.after(60_000, self.codex_market_tick)
@@ -958,6 +964,8 @@ class BotGUI:
         self.show_hunt_advance_popup(current_hunt, bot.HUNT_ADVANCE_CONFIRM.get("next_hunt"))
 
     def show_hunt_advance_popup(self, current_hunt, next_hunt):
+        if self.tray_icon is not None:
+            self.show_from_tray()  # escondido na bandeja o popup (transient) tambem ficaria invisivel
         win = ctk.CTkToplevel(self.root)
         win.title("Avançar de hunt?")
         win.geometry("380x170")
@@ -1616,9 +1624,146 @@ class BotGUI:
         self.pause_button.configure(state="disabled")
         self.stop_button.configure(state="disabled")
 
+    # ---------- fechar / minimizar pra bandeja (Windows) ----------
+
+    def request_close(self):
+        """Clique no X: pergunta se fecha de vez ou guarda na bandeja (so no
+        Windows - no resto o X fecha direto, como sempre)."""
+        if sys.platform != "win32":
+            self.on_close()
+            return
+        if self.close_dialog is not None and self.close_dialog.winfo_exists():
+            self.close_dialog.lift()
+            return
+
+        win = ctk.CTkToplevel(self.root)
+        win.title("Fechar o bot")
+        win.geometry("420x200")
+        win.configure(fg_color=theme.BG)
+        win.transient(self.root)
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        self.close_dialog = win
+
+        def choose(action):
+            win.destroy()
+            if action == "tray":
+                self.hide_to_tray()
+            elif action == "quit":
+                self.on_close()
+
+        ctk.CTkLabel(
+            win, text="O que deseja fazer?", font=theme.FONT_BODY, text_color=theme.TEXT,
+        ).pack(padx=20, pady=(20, 6))
+        running = self.thread is not None and self.thread.is_alive()
+        hint = (
+            "O bot está rodando: na bandeja ele continua; fechar de vez para tudo."
+            if running else "Na bandeja o app fica escondido; fechar de vez encerra o programa."
+        )
+        ctk.CTkLabel(
+            win, text=hint, font=theme.FONT_BODY, text_color=theme.MUTED, wraplength=380,
+        ).pack(padx=20, pady=(0, 16))
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(pady=(0, 16))
+        ctk.CTkButton(
+            btn_row, text="Guardar na bandeja", command=lambda: choose("tray"),
+            fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER, text_color="#04140a",
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            btn_row, text="Fechar de vez", command=lambda: choose("quit"),
+            fg_color=theme.PANEL_ALT, hover_color=theme.BORDER, text_color=theme.TEXT,
+            border_width=1, border_color=theme.BORDER,
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            btn_row, text="Cancelar", command=lambda: choose("cancel"),
+            fg_color="transparent", hover_color=theme.BORDER, text_color=theme.MUTED,
+        ).pack(side="left", padx=6)
+        win.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+
+    def on_window_unmap(self, event):
+        """Clique no '-' (minimizar): em vez de ir pra barra de tarefas, vai
+        pra bandeja (escondido). Ignora o Unmap de widgets filhos e o do
+        proprio 'withdraw'."""
+        if event.widget is not self.root:
+            return
+        try:
+            if self.root.state() == "iconic":
+                self.root.after(50, self.hide_to_tray)
+        except tk.TclError:
+            pass
+
+    def _load_tray_libs(self):
+        # importado so aqui (e so no Windows) - o pystray do Mac exige o loop
+        # principal e o PyInstaller do Mac nem precisa analisar isso.
+        try:
+            import importlib
+            return importlib.import_module("pystray"), importlib.import_module("PIL.Image")
+        except Exception as error:
+            self.log(f"Bandeja indisponivel ({error}) - o app fica so minimizado.")
+            return None
+
+    def hide_to_tray(self):
+        if sys.platform != "win32" or self.tray_icon is not None:
+            return
+        libs = self._load_tray_libs()
+        if libs is None:
+            return
+        pystray, image_module = libs
+        icon_path = os.path.join(bot.resource_dir(), "icon.ico")
+        try:
+            image = image_module.open(icon_path)
+            label = bot.BROWSER_PROFILES[self.current_profile]["label"]
+            menu = pystray.Menu(
+                pystray.MenuItem("Abrir", lambda icon, item: self.tray_queue.put("open"), default=True),
+                pystray.MenuItem("Fechar de vez", lambda icon, item: self.tray_queue.put("quit")),
+            )
+            self.tray_icon = pystray.Icon("BaiakIdleBot", image, f"BAIAK IDLE BOT — {label}", menu)
+            self.tray_icon.run_detached()
+        except Exception as error:
+            self.tray_icon = None
+            self.log(f"Nao consegui criar o icone da bandeja ({error}) - o app fica so minimizado.")
+            return
+        self.root.withdraw()
+
+    def stop_tray_icon(self):
+        icon, self.tray_icon = self.tray_icon, None
+        if icon is not None:
+            try:
+                icon.stop()
+            except Exception:
+                pass
+
+    def show_from_tray(self):
+        self.stop_tray_icon()
+        try:
+            self.root.deiconify()
+            self.root.state("normal")
+            self.root.lift()
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
+    def poll_tray_queue(self):
+        """Os cliques do icone da bandeja chegam de OUTRA thread (pystray) -
+        o Tk so' pode ser mexido na thread principal, entao viram mensagens
+        numa fila lida aqui."""
+        try:
+            while True:
+                action = self.tray_queue.get_nowait()
+                if action == "open":
+                    self.show_from_tray()
+                elif action == "quit":
+                    self.on_close()
+                    return
+        except queue.Empty:
+            pass
+        self.root.after(300, self.poll_tray_queue)
+
     def on_close(self):
         self.stop_event.set()
         self.pause_event.clear()
+        self.stop_tray_icon()
         self.root.destroy()
 
 

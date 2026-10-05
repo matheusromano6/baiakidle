@@ -64,7 +64,7 @@ Se o usuário estiver com o bot rodando (processo `BaiakIdleBot`), o
 ```powershell
 $driver = python -c "import playwright, os; print(os.path.join(os.path.dirname(playwright.__file__), 'driver'))"
 $icon = (Resolve-Path "icon.ico").Path
-python -m PyInstaller --onefile --windowed --name BaiakIdleBot --icon $icon --add-data "$driver;playwright\driver" --hidden-import sqlite3 --distpath dist_fix --workpath build_fix --specpath spec_fix gui.py --noconfirm
+python -m PyInstaller --onefile --windowed --name BaiakIdleBot --icon $icon --add-data "$driver;playwright\driver" --hidden-import sqlite3 --hidden-import pystray --hidden-import pystray._win32 --distpath dist_fix --workpath build_fix --specpath spec_fix gui.py --noconfirm
 ```
 (inclua os `--hidden-import` novos do passo 2).
 

@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.18.0"
+VERSION = "4.19.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -48,6 +48,16 @@ BROWSER_PROFILES = {
         "routines_filename": "routines_idledeck.json",
         "settings_filename": "settings_idledeck.json",
         "launcher": "idledeck",
+    },
+    # IdleDeck (VPN): uma COPIA do IdleDeck (.exe solto) que o split tunneling
+    # da VPN manda por outro IP - 2a conta/IP ao lado do IdleDeck normal. 9225.
+    "idledeck_copy": {
+        "label": "IdleDeck (VPN)",
+        "cdp_port": 9225,
+        "profile_dir_name": "idledeck_copy_profile",
+        "routines_filename": "routines_idledeck_vpn.json",
+        "settings_filename": "settings_idledeck_vpn.json",
+        "launcher": "idledeck_copy",
     },
 }
 CURRENT_PROFILE = "chrome"  # navegador ativo nesta sessao - trocado via set_active_profile()
@@ -664,7 +674,7 @@ IDLEDECK_LAUNCH_TIMEOUT_SECONDS = 40
 
 _IDLEDECK_PS_COMMON = """
 $ErrorActionPreference = 'Stop'
-function Get-IdleDeckProcs { @(Get-Process IdleDeck -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited }) }
+function Get-IdleDeckProcs { param($like) @(Get-Process IdleDeck -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited -and ($like -eq $null -or $_.Path -like $like) }) }
 """
 
 _IDLEDECK_PS_ACTIVATE = """
@@ -714,26 +724,81 @@ def _run_powershell(script, timeout=60):
     return (result.stdout or "").strip()
 
 
-def idledeck_running():
+def _idledeck_ps_filter(path_like):
+    """Trecho PowerShell que lista os processos do IdleDeck, opcionalmente so'
+    os de um caminho (a versao da Store roda dentro de WindowsApps, a copia do
+    perfil VPN em outra pasta - sao instancias DIFERENTES e uma nunca deve
+    fechar a outra)."""
+    if not path_like:
+        return "Get-IdleDeckProcs"
+    return "Get-IdleDeckProcs -like '" + path_like.replace("'", "''") + "'"
+
+
+# processos da versao instalada pela Microsoft Store
+IDLEDECK_PACKAGE_LIKE = "*" + os.sep + "WindowsApps" + os.sep + "*"
+# onde fica a COPIA do IdleDeck usada pelo perfil 'idledeck_copy' (settings:
+# 'idledeck_exe' muda). Uma copia da pasta 'app' do IdleDeck, com o executavel
+# adicionado ao split tunneling da VPN, da' a ela um IP diferente do original.
+IDLEDECK_COPY_DEFAULT_EXE = "C:/IdleDeck-VPN/app/IdleDeck.exe"
+
+
+def idledeck_running(path_like=None):
     """True se ha processo do IdleDeck vivo (com ou sem porta de depuracao)."""
-    out = _run_powershell(_IDLEDECK_PS_COMMON + "(Get-IdleDeckProcs).Count", timeout=30)
+    out = _run_powershell(_IDLEDECK_PS_COMMON + "(" + _idledeck_ps_filter(path_like) + ").Count", timeout=30)
     return out.strip().isdigit() and int(out.strip()) > 0
 
 
-def idledeck_request_close():
+def idledeck_request_close(path_like=None):
     """Pede pra janela principal fechar (igual clicar no X). O app pode abrir
     um dialogo nativo perguntando se quer sair - quem confirma e' o usuario."""
     _run_powershell(
-        _IDLEDECK_PS_COMMON
-        + "Get-IdleDeckProcs | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { $null = $_.CloseMainWindow() }",
+        _IDLEDECK_PS_COMMON + _idledeck_ps_filter(path_like)
+        + " | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { $null = $_.CloseMainWindow() }",
         timeout=30,
     )
 
 
+def _idledeck_close_and_wait(path_like, log):
+    """Se ja ha um IdleDeck (do caminho dado) aberto SEM a porta de depuracao,
+    pede pra fechar pela janela e espera o usuario confirmar 'Sair'. Retorna
+    True se nao ha mais nenhum aberto."""
+    if not idledeck_running(path_like):
+        return True
+    log(
+        "O IdleDeck esta aberto SEM a depuracao remota - pedindo pra fechar. "
+        "Se aparecer uma janela perguntando, escolha SAIR (nao so minimizar); "
+        "o bot reabre sozinho em seguida (suas contas/logins ficam salvos)."
+    )
+    idledeck_request_close(path_like)
+    deadline = time.monotonic() + IDLEDECK_CLOSE_WAIT_SECONDS
+    last_reminder = time.monotonic()
+    while time.monotonic() < deadline and idledeck_running(path_like):
+        time.sleep(2)
+        if time.monotonic() - last_reminder >= 30:
+            last_reminder = time.monotonic()
+            log("  Ainda aguardando o IdleDeck fechar - feche pela janela dele (Sair).")
+    if idledeck_running(path_like):
+        log("O IdleDeck nao fechou a tempo. Feche pela janela (Sair) e clique em 'Abrir Jogo' de novo.")
+        return False
+    time.sleep(2)  # deixa o Windows liberar o pacote/arquivos antes de reabrir
+    return True
+
+
+def _wait_debug_port(log, name):
+    deadline = time.monotonic() + IDLEDECK_LAUNCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if is_debug_port_open():
+            log(f"{name} pronto.")
+            return True
+        time.sleep(0.5)
+    log(f"O {name} abriu mas a porta de depuracao nao respondeu.")
+    return False
+
+
 def launch_idledeck(log=print):
-    """Equivalente de 'launch_browser' pro perfil IdleDeck: deixa o app aberto
-    com a porta de depuracao (cdp_port do perfil) respondendo. Retorna True se
-    a porta responde no final."""
+    """Equivalente de 'launch_browser' pro perfil IdleDeck (versao da Store):
+    deixa o app aberto com a porta de depuracao (cdp_port do perfil)
+    respondendo. Retorna True se a porta responde no final."""
     if is_debug_port_open():
         log("IdleDeck ja esta com a depuracao remota ativa.")
         return True
@@ -742,24 +807,8 @@ def launch_idledeck(log=print):
         return False
 
     try:
-        if idledeck_running():
-            log(
-                "O IdleDeck esta aberto SEM a depuracao remota - pedindo pra fechar. "
-                "Se aparecer uma janela perguntando, escolha SAIR (nao so minimizar); "
-                "o bot reabre sozinho em seguida (suas contas/logins ficam salvos)."
-            )
-            idledeck_request_close()
-            deadline = time.monotonic() + IDLEDECK_CLOSE_WAIT_SECONDS
-            last_reminder = time.monotonic()
-            while time.monotonic() < deadline and idledeck_running():
-                time.sleep(2)
-                if time.monotonic() - last_reminder >= 30:
-                    last_reminder = time.monotonic()
-                    log("  Ainda aguardando o IdleDeck fechar - feche pela janela dele (Sair).")
-            if idledeck_running():
-                log("O IdleDeck nao fechou a tempo. Feche pela janela (Sair) e clique em 'Abrir Jogo' de novo.")
-                return False
-            time.sleep(2)  # deixa o Windows liberar o pacote antes de reativar
+        if not _idledeck_close_and_wait(IDLEDECK_PACKAGE_LIKE, log):
+            return False
 
         log("Abrindo o IdleDeck com a depuracao remota...")
         script = _IDLEDECK_PS_ACTIVATE.replace("__PORT__", str(cdp_port()))
@@ -778,18 +827,48 @@ def launch_idledeck(log=print):
         if not out.startswith("OK"):
             log(f"Nao consegui abrir o IdleDeck: {last_error or out}")
             return False
-
-        while time.monotonic() < deadline:
-            if is_debug_port_open():
-                log("IdleDeck pronto.")
-                return True
-            time.sleep(0.5)
+        return _wait_debug_port(log, "IdleDeck")
     except Exception as error:
         log(f"Erro ao abrir o IdleDeck: {error}")
         return False
 
-    log("O IdleDeck abriu mas a porta de depuracao nao respondeu.")
-    return False
+
+def launch_idledeck_copy(log=print):
+    """Perfil 'idledeck_copy' (IdleDeck VPN): abre a COPIA do IdleDeck (um
+    .exe solto, sem o pacote da Store) com pasta de dados propria
+    ('--idledeck-data', o bloqueio de instancia unica do app e' por pasta) e a
+    porta de depuracao do perfil. CONFIRMADO ao vivo: com o .exe da copia no
+    split tunneling por aplicativo do Kaspersky VPN, ele sai por outro IP que o
+    IdleDeck original."""
+    name = "IdleDeck (VPN)"
+    if is_debug_port_open():
+        log(f"{name} ja esta com a depuracao remota ativa.")
+        return True
+    if platform.system() != "Windows":
+        log("O perfil IdleDeck (VPN) so funciona no Windows por enquanto.")
+        return False
+
+    exe = os.path.normpath(str(load_settings().get("idledeck_exe") or IDLEDECK_COPY_DEFAULT_EXE))
+    if not os.path.exists(exe):
+        log(
+            f"Copia do IdleDeck nao encontrada em '{exe}'. Copie a pasta 'app' do IdleDeck pra la "
+            "(e adicione o executavel no split tunneling da sua VPN) ou ajuste 'idledeck_exe' nas configuracoes."
+        )
+        return False
+    exe_dir = os.path.dirname(exe)
+    data_folder = os.path.join(os.path.dirname(exe_dir), "data")
+    try:
+        if not _idledeck_close_and_wait(exe_dir + os.sep + "*", log):
+            return False
+        log(f"Abrindo o {name} com a depuracao remota...")
+        subprocess.Popen(
+            [exe, f"--idledeck-data={data_folder}", f"--remote-debugging-port={cdp_port()}"],
+            cwd=exe_dir,
+        )
+        return _wait_debug_port(log, name)
+    except Exception as error:
+        log(f"Erro ao abrir o {name}: {error}")
+        return False
 
 
 def launch_browser(log=print):
@@ -801,8 +880,11 @@ def launch_browser(log=print):
     final, a porta de depuracao esta respondendo (ja estivesse aberta ou nao).
     """
     label = BROWSER_PROFILES[CURRENT_PROFILE]["label"]
-    if BROWSER_PROFILES[CURRENT_PROFILE].get("launcher") == "idledeck":
+    launcher = BROWSER_PROFILES[CURRENT_PROFILE].get("launcher")
+    if launcher == "idledeck":
         return launch_idledeck(log)
+    if launcher == "idledeck_copy":
+        return launch_idledeck_copy(log)
     if is_debug_port_open():
         log(f"{label} ja esta com a depuracao remota ativa.")
         return True
@@ -1461,7 +1543,7 @@ def connect_game_page(playwright):
     # trecho do titulo da aba (o titulo comeca com o nome do personagem, ex:
     # "Cibele Druid") que escolhe QUAL conta este bot controla; vazio = a 1a.
     needle = ""
-    if BROWSER_PROFILES[CURRENT_PROFILE].get("launcher") == "idledeck":
+    if BROWSER_PROFILES[CURRENT_PROFILE].get("launcher") in ("idledeck", "idledeck_copy"):
         needle = str(load_settings().get("idledeck_account") or "").strip().lower()
 
     deadline = time.monotonic() + CONNECT_GAME_PAGE_TIMEOUT_SECONDS

@@ -14,6 +14,8 @@ routines_idledeck.json
 settings.json
 settings_opera.json
 settings_idledeck.json
+routines_idledeck_vpn.json
+settings_idledeck_vpn.json
 *.state.json
 
 # painel de mercado - o CODIGO agora vai junto no build compartilhado (roda

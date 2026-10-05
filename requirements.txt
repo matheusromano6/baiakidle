@@ -1,2 +1,4 @@
 playwright
 customtkinter
+pillow
+pystray; sys_platform == "win32"
