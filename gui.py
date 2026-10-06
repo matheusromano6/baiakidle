@@ -1410,11 +1410,12 @@ class BotGUI:
                             hover_color=theme.ACCENT_HOVER,
                         ).pack(anchor="w", padx=10, pady=3)
 
-            # 'dom_guild_tasks' tem 3 niveis de dificuldade (Facil/Media/Dificil)
-            # que o usuario escolhe quais aceitar - mesmo padrao das cores acima.
+            # 'dom_guild_tasks' e 'dom_battlepass' tem 3 niveis de dificuldade
+            # (Facil/Media/Dificil) que o usuario escolhe quais aceitar - mesmo
+            # padrao das cores acima.
             difficulty_items = []
             for step in routine["steps"]:
-                if step.get("type") == "dom_guild_tasks":
+                if step.get("type") in ("dom_guild_tasks", "dom_battlepass"):
                     difficulty_items.extend(step["difficulties"])
 
             if difficulty_items:

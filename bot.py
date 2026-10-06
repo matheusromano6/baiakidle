@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.19.2"
+VERSION = "4.20.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -204,6 +204,23 @@ SOUND_MEMORY = {"enabled": True}
 # redirecionado, mesmo com hunt padrao configurada.
 GUILD_TASK_MEMORY = {"previous_hunt": None, "grinding": False, "grinding_since": None}
 GUILD_TASK_GRINDING_MAX_SECONDS = 20 * 60
+
+# Memoria da rotina das Missoes do Passe (mesmo papel da GUILD_TASK_MEMORY):
+# 'grinding' = o bot esta caçando a hunt de uma missao do passe; 'previous_hunt'
+# = de onde saiu (pra voltar quando acabarem as missoes elegiveis);
+# 'go_fails' = vezes seguidas que 'Ir pra caçada' nao levou pra hunt da missao;
+# 'deliver_retry_at' = nao tenta entregar de novo antes disso (apos uma falha);
+# 'logged' = avisos de 'missao pulada' ja dados (nao repete a cada rodada).
+PASSE_MEMORY = {"previous_hunt": None, "grinding": False, "grinding_since": None, "go_fails": 0,
+                "deliver_retry_at": 0.0, "logged": set()}
+PASSE_DELIVER_RETRY_SECONDS = 30
+PASSE_MAX_GO_FAILS = 3
+
+# Nivel recomendado de cada hunt ('.stage-lvl' da lista de Hunts), lido uma vez
+# e reaproveitado - serve pra regra "so faz a task/missao se o nosso nivel for
+# pelo menos o da hunt" (Tasks da Guild e Passe).
+HUNT_LEVELS_MEMORY = {"loaded_at": 0.0, "levels": {}}
+HUNT_LEVELS_MAX_AGE_SECONDS = 60 * 60
 
 # Memoria da rotina de Bestiary: 'last_hunt' evita ficar reabrindo o Cyclopedia
 # toda hora - so refaz a marcacao de rastreio quando a hunt muda de verdade.
@@ -985,6 +1002,14 @@ GUILD_TASK_DIFFICULTIES = [
     {"key": "dificil", "label": "Difícil", "card_class": "gwt-hard", "enabled": True},
 ]
 
+# Mesmas 3 dificuldades pras Missoes do Passe ('card_class' aqui e a classe da
+# etiqueta de dificuldade da missao dentro do modal do Passe).
+PASSE_DIFFICULTIES = [
+    {"key": "facil", "label": "Fácil", "card_class": "bp-band-easy", "enabled": True},
+    {"key": "media", "label": "Média", "card_class": "bp-band-medium", "enabled": True},
+    {"key": "dificil", "label": "Difícil", "card_class": "bp-band-hard", "enabled": True},
+]
+
 # Config por vocacao da build automatica (arvore de talentos). Cada vocacao e
 # independente porque cada personagem da conta pode querer um foco diferente.
 # 'mode'/'focus' usam os mesmos values do site otimizador (baiakidle-build-
@@ -1140,6 +1165,24 @@ DEFAULT_ROUTINES = [
         "skip_when_training": True,
         "trigger": {"mode": "interval", "seconds": 600},
         "steps": [{"type": "dom_potion_stock"}],
+    },
+    {
+        # Missoes do Passe de Temporada: escolhe (so a versao Normal) a missao
+        # elegivel pelo nivel + dificuldade marcada e vai pra hunt dela. A ENTREGA
+        # nao depende desta rotina - e automatica sempre que o contador do Passe
+        # na tela bate a meta (ve 'deliver_pass_if_ready'). Fica ANTES da guild
+        # de proposito: a ordem e chefes > passe > tasks da guild.
+        "id": "missoes_passe",
+        "name": "Missões do Passe",
+        "enabled": False,
+        "skip_when_training": True,
+        "trigger": {"mode": "interval", "seconds": 1800, "active_seconds": 60},
+        "steps": [
+            {
+                "type": "dom_battlepass",
+                "difficulties": [dict(d) for d in PASSE_DIFFICULTIES],
+            },
+        ],
     },
     {
         # As tasks da guild resetam toda vez que o jogo libera novas (Diarias,
@@ -1463,6 +1506,18 @@ def _ensure_potion_routine(routines):
     return True
 
 
+def _ensure_passe_routine(routines):
+    """Um 'routines.json' salvo antes do Passe existir ganha a rotina das
+    Missoes do Passe (desligada) logo ANTES das Tarefas da Guild (ordem:
+    chefes > passe > guild). Retorna True se adicionou."""
+    if any(r.get("id") == "missoes_passe" for r in routines):
+        return False
+    template = next(r for r in DEFAULT_ROUTINES if r["id"] == "missoes_passe")
+    position = next((i for i, r in enumerate(routines) if r.get("id") == "tarefas_guild"), len(routines))
+    routines.insert(position, json.loads(json.dumps(template)))
+    return True
+
+
 def load_routines():
     path = routines_path()
     if not os.path.exists(path):
@@ -1472,6 +1527,7 @@ def load_routines():
     changed = _ensure_mandatory_vender_loot_steps(routines)
     changed = _ensure_campaign_routine(routines) or changed
     changed = _ensure_potion_routine(routines) or changed
+    changed = _ensure_passe_routine(routines) or changed
     if changed:
         save_routines(routines)
     return routines
@@ -2549,7 +2605,7 @@ def execute_dom_codex_campaign_step(page, step, log):
         CAMPAIGN_MEMORY["target_hunt"] = None
         CAMPAIGN_MEMORY["target_entry"] = None
         return True
-    if GUILD_TASK_MEMORY.get("grinding"):
+    if task_grinding():
         return True
 
     now = time.monotonic()
@@ -3808,7 +3864,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
             # com o painel de Chefes ja fechado (recover acima), porque
             # abrir o Bosstiary navega pra outra tela e fecharia ele mesmo.
             read_bosstiary_kills(page, log)
-            if not GUILD_TASK_MEMORY.get("grinding"):
+            if not task_grinding():
                 # chefes sao a interrupcao de maior prioridade - ao
                 # terminar TODOS os prontos, volta pra hunt padrao (a
                 # 'base') na hora, sem esperar o proximo tick de
@@ -3820,7 +3876,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     restore_boss_amulet(page, log)
     if fought_any:
         read_bosstiary_kills(page, log)
-        if not GUILD_TASK_MEMORY.get("grinding"):
+        if not task_grinding():
             return_to_default_hunt(page, log, force=True)
     return True
 
@@ -4292,6 +4348,425 @@ def restore_boss_amulet(page, log):
         log(f"  Nao consegui devolver o amuleto do {BOSS_AMULET_CHAR} agora - tento de novo no fim da proxima sequencia.")
 
 
+def task_grinding():
+    """True enquanto o bot caça a hunt de uma task da guild OU de uma missao do
+    passe - nesse tempo nada de avanco de hunt, campanha, reload da pagina etc.
+    (mesma prioridade das tasks da guild)."""
+    return bool(GUILD_TASK_MEMORY.get("grinding") or PASSE_MEMORY.get("grinding"))
+
+
+def log_once(key, message, log):
+    """Loga 'message' so na primeira vez que 'key' aparece (evita repetir o
+    mesmo aviso a cada rodada de uma rotina)."""
+    if key in PASSE_MEMORY["logged"]:
+        return
+    PASSE_MEMORY["logged"].add(key)
+    log(message)
+
+
+def read_active_char_level(page, log):
+    """Nivel do personagem ATIVO (o marcado na barra de personagens), lido da
+    party que ja fica na tela. A vocacao vem do titulo do botao do
+    personagem ('Nome (Druid) · clique p/ configurar...'). None se nao deu."""
+    try:
+        title = page.eval_on_selector(".bar-char.active", "el => el.title || ''") or ""
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return None
+    match = re.search(r"\(([^)]+)\)", title)
+    vocation = detect_vocation(match.group(1) if match else title)
+    if not vocation:
+        return None
+    return read_party_levels(page, log).get(vocation)
+
+
+def get_hunt_levels(page, log):
+    """{nome da hunt: nivel recomendado} da lista de Hunts do jogo. So relê
+    (abre/fecha o menu de Teleportes) a cada HUNT_LEVELS_MAX_AGE_SECONDS -
+    nivel de hunt nao muda."""
+    now = time.monotonic()
+    if not HUNT_LEVELS_MEMORY["levels"] or now - HUNT_LEVELS_MEMORY["loaded_at"] >= HUNT_LEVELS_MAX_AGE_SECONDS:
+        rows = read_hunt_list(page, log)
+        if rows:
+            HUNT_LEVELS_MEMORY["levels"] = {r["name"]: r["level"] for r in rows if r.get("level") is not None}
+        HUNT_LEVELS_MEMORY["loaded_at"] = now
+    return HUNT_LEVELS_MEMORY["levels"]
+
+
+# ---------- Passe de Temporada ----------
+
+# Estado do modal do Passe: 'active' (missao em curso: nome + botoes) ou
+# 'choose' (lista "Missoes de hoje": nome, etiqueta de dificuldade, se esta
+# bloqueada pelo limite do dia). Nao compara textos com acento de proposito.
+PASS_STATE_JS = """() => {
+    const m = document.querySelector('#bp-modal');
+    if (!m || m.classList.contains('hidden')) return null;
+    const bands = ['bp-band-easy', 'bp-band-medium', 'bp-band-hard'];
+    const act = m.querySelector('.bp-active-row');
+    if (act) {
+        return {
+            mode: 'active',
+            name: ((act.querySelector('.bp-mini-nm') || {}).textContent || '').trim(),
+            buttons: Array.from(act.querySelectorAll('.bp-actions button')).map(b => ({
+                text: (b.textContent || '').trim(), disabled: !!b.disabled})),
+        };
+    }
+    return {
+        mode: 'choose',
+        missions: Array.from(m.querySelectorAll('.bp-missions-line .bp-mini')).map(b => ({
+            name: ((b.querySelector('.bp-mini-nm') || {}).textContent || '').trim(),
+            band: bands.find(c => b.querySelector('.' + c)) || '',
+            locked: b.classList.contains('locked') || !!b.disabled})),
+    };
+}"""
+
+
+def read_pass_tracker(page):
+    """Contador 'Passe' da tela principal (overlay '#bptrack-overlay', ex:
+    '13/600'): (atual, meta, pronto) ou None se nao esta na tela. 'pronto' =
+    o texto ficou verde (classe 'ok') ou atual >= meta."""
+    try:
+        data = page.evaluate(
+            """() => {
+                const el = document.querySelector('#bptrack-overlay .bpk-num');
+                return el ? {text: el.textContent || '', ok: el.classList.contains('ok')} : null;
+            }"""
+        )
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return None
+    if not data:
+        return None
+    match = re.match(r"\s*([\d.]+)\s*/\s*([\d.]+)", data["text"])
+    if not match:
+        return None
+    current, goal = (int(g.replace(".", "")) for g in match.groups())
+    return current, goal, bool(data["ok"] or (goal > 0 and current >= goal))
+
+
+def open_pass_modal(page):
+    """Abre o modal do Passe pela aba '#tab-battlepass' (a aba alterna
+    aberto/fechado, entao so clica se ainda nao estiver aberto). True se o
+    modal ficou visivel."""
+    if page.is_visible("#bp-modal .bp-strip"):
+        return True
+    try:
+        try:
+            page.click("#tab-battlepass", timeout=3000)
+        except Exception:
+            page.click("#tab-battlepass", timeout=3000, force=True)  # janelas do HUD podem cobrir a aba
+        page.wait_for_selector("#bp-modal .bp-strip", state="visible", timeout=4000)
+        return True
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return False
+
+
+def close_pass_modal(page):
+    try:
+        if page.is_visible("#bp-modal-close"):
+            page.click("#bp-modal-close", timeout=2000)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+
+
+def click_pass_deliver(page, log):
+    """Com o modal do Passe aberto: clica 'Entregar' (so existe habilitado
+    quando a meta foi batida; antes disso o botao dourado diz 'Faltam N') e
+    espera a faixa virar a lista de missoes. True se entregou."""
+    button = page.locator("#bp-modal .bp-actions button.bp-btn-gold", has_text="Entregar")
+    try:
+        if button.count() == 0 or not button.first.is_enabled():
+            return False
+        button.first.click(timeout=3000)
+        page.wait_for_selector("#bp-modal .bp-missions-line", timeout=5000)
+        return True
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        log(f"  Erro ao entregar a missao do passe: {error}")
+        return False
+
+
+def claim_pass_rewards(page, log):
+    """Com o Passe aberto: retira os premios de degrau que estiverem esperando
+    ('Retirar tudo · N' quando existe; senao 'Retirar' do degrau selecionado -
+    ao ver o botao ele so existe com premio pronto). O grátis cai na hora
+    (ex: boost de XP) e o do Premium vai pra Caixa de Entrada. Se aparecer
+    uma confirmacao inesperada, cancela e avisa em vez de aceitar no escuro.
+    True se clicou em algum."""
+    for selector in ("#bp-modal .bp-map-all", "#bp-modal .bp-map-take"):
+        button = page.locator(selector)
+        try:
+            if button.count() == 0 or not button.first.is_visible() or not button.first.is_enabled():
+                continue
+            label = (button.first.text_content() or "").strip()
+            button.first.click(timeout=3000)
+            page.wait_for_timeout(800)
+            if page.is_visible("#confirm-modal .im-card"):
+                log(f"  O jogo pediu confirmacao ao '{label}' no passe - cancelei, retire manualmente.")
+                cancel_pass_confirm(page)
+                return False
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            log(f"  Erro ao retirar o premio do passe: {error}")
+            return False
+        log(f"  Premio do passe retirado ('{label}').")
+        record_activity("Passe: premio de degrau retirado.")
+        return True
+    return False
+
+
+def pass_delivered(name, log):
+    log(f"  Missao do passe '{name}' entregue!")
+    play_achievement_sound()
+    record_activity(f"Missao do passe completa: '{name}' - entregue com sucesso.")
+    FORCE_RUN_NOW.add("missoes_passe")  # escolhe a proxima ja na proxima volta do loop
+
+
+def deliver_pass_if_ready(page, log):
+    """Entrega sozinho a missao do Passe quando o contador dela na tela bate a
+    meta (texto verde / atual >= meta). Roda a cada tick do loop principal -
+    so le o overlay (barato) e so abre o Passe quando ha o que entregar. Vale
+    pra qualquer missao em curso, tenha ela sido escolhida pelo bot ou nao."""
+    tracker = read_pass_tracker(page)
+    if tracker is None or not tracker[2]:
+        return False
+    if time.monotonic() < PASSE_MEMORY["deliver_retry_at"]:
+        return False
+    delivered = False
+    if open_pass_modal(page):
+        state = page.evaluate(PASS_STATE_JS)
+        if state and state.get("mode") == "active":
+            name = state.get("name") or "?"
+            delivered = click_pass_deliver(page, log)
+            if delivered:
+                pass_delivered(name, log)
+                claim_pass_rewards(page, log)  # a entrega pode ter completado um degrau
+    close_pass_modal(page)
+    if not delivered:
+        PASSE_MEMORY["deliver_retry_at"] = time.monotonic() + PASSE_DELIVER_RETRY_SECONDS
+    return delivered
+
+
+def cancel_pass_confirm(page):
+    try:
+        page.click("#confirm-no", timeout=2000)
+        page.wait_for_selector("#confirm-modal .bp-detail", state="detached", timeout=2000)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+
+
+def choose_pass_mission(page, state, order, labels, log):
+    """Modal do Passe na lista 'Missoes de hoje': percorre as missoes liberadas
+    (nao bloqueadas pelo limite do dia) das dificuldades marcadas, na ordem
+    de prioridade, abre o detalhe de cada uma, le o nivel da hunt ('nivel N') e
+    escolhe a primeira em que o nosso nivel e >= o da hunt - SEMPRE a versao
+    Normal (a Endemoniada custa gold). True se escolheu alguma, False se nao
+    ha nenhuma elegivel, None se nao deu pra decidir (nivel nao lido)."""
+    char_level = read_active_char_level(page, log)
+    if char_level is None:
+        log_once("passe-sem-nivel", "  Nao consegui ler o nivel do personagem - nao escolho missao do passe agora.", log)
+        return None  # nao decidiu (diferente de False = nenhuma elegivel)
+
+    candidates = sorted(
+        (m for m in state["missions"] if not m["locked"] and m["band"] in order),
+        key=lambda m: order[m["band"]],
+    )
+    for mission in candidates:
+        name = mission["name"]
+        safe_name = name.replace('"', '\\"')
+        label = labels[mission["band"]]
+        try:
+            page.locator(f'#bp-modal .bp-missions-line .bp-mini:not(.locked):has(.bp-mini-nm:text-is("{safe_name}"))').first.click(timeout=3000)
+            page.wait_for_selector("#confirm-modal .bp-detail", state="visible", timeout=3000)
+            detail = page.eval_on_selector("#confirm-modal .bp-detail-l .muted", "el => el.textContent || ''") or ""
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            log(f"  Erro ao abrir a missao do passe '{name}': {error}")
+            cancel_pass_confirm(page)
+            continue
+
+        match = re.search(r"n[ií]vel\s*(\d+)", detail, re.IGNORECASE)
+        hunt_level = int(match.group(1)) if match else None
+        if hunt_level is None:
+            log_once(f"passe-sem-nivel-{name}", f"  Missao do passe '{name}' ({label}): nao achei o nivel da hunt - pulada.", log)
+            cancel_pass_confirm(page)
+            continue
+        if hunt_level > char_level:
+            log_once(
+                f"passe-alto-{name}-{hunt_level}-{char_level}",
+                f"  Missao do passe '{name}' ({label}) pulada: hunt lvl {hunt_level} > nosso lvl {char_level}.",
+                log,
+            )
+            cancel_pass_confirm(page)
+            continue
+
+        try:
+            # garante 'Normal' marcado (e nunca confirma com a Endemoniada, que custa gold)
+            if page.eval_on_selector("#confirm-modal .bp-dif-c.on", "el => el.classList.contains('dem')"):
+                page.locator("#confirm-modal .bp-dif-c:not(.dem)").first.click(timeout=3000)
+            if page.eval_on_selector("#confirm-modal .bp-dif-c.on", "el => el.classList.contains('dem')"):
+                log(f"  Missao do passe '{name}': nao consegui marcar a versao Normal - cancelada.")
+                cancel_pass_confirm(page)
+                continue
+            page.click("#confirm-yes", timeout=3000)
+            page.wait_for_selector("#bp-modal .bp-active-row", timeout=5000)
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            log(f"  Erro ao escolher a missao do passe '{name}': {error}")
+            cancel_pass_confirm(page)
+            continue
+        log(f"  Missao do passe '{name}' ({label}, hunt lvl {hunt_level}) escolhida.")
+        PASSE_MEMORY["logged"].clear()
+        return True
+    if candidates:
+        log_once(
+            f"passe-nenhuma-{char_level}",
+            f"  Nenhuma missao do passe elegivel agora (lvl {char_level}) - escolha manualmente se quiser.",
+            log,
+        )
+    return False
+
+
+def go_to_pass_hunt(page, name, state, log):
+    """Missao em curso: garante o rastreio na tela e leva o personagem pra hunt
+    dela com 'Ir pra caçada' (que abandona a hunt atual - ok fora de chefe).
+    Marca 'grinding' quando ja esta na hunt da missao."""
+    for button in state["buttons"]:
+        if "acompanhar" in button["text"].lower() and not button["disabled"]:
+            try:
+                page.locator("#bp-modal .bp-actions button", has_text="Acompanhar na tela").first.click(timeout=3000)
+            except Exception as error:
+                if is_connection_dead_error(error):
+                    raise
+            break
+
+    try:
+        current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return
+    if current_hunt == name:
+        PASSE_MEMORY["go_fails"] = 0
+        PASSE_MEMORY["grinding"] = True
+        PASSE_MEMORY["grinding_since"] = time.monotonic()  # heartbeat (ve ensure_active_hunt)
+        if PASSE_MEMORY["previous_hunt"] is None:
+            PASSE_MEMORY["previous_hunt"] = GUILD_TASK_MEMORY.get("previous_hunt")
+        return
+
+    go_button = next((b for b in state["buttons"] if "ir pra" in b["text"].lower()), None)
+    if go_button is None or go_button["disabled"]:
+        log_once(f"passe-sem-ir-{name}", f"  Missao do passe '{name}': botao 'Ir pra caçada' indisponivel.", log)
+        return
+    if PASSE_MEMORY["go_fails"] >= PASSE_MAX_GO_FAILS:
+        log_once(f"passe-ir-falhou-{name}", f"  Nao consegui levar o personagem pra hunt '{name}' (missao do passe) - desisti, va manualmente.", log)
+        return
+
+    if PASSE_MEMORY["previous_hunt"] is None:
+        PASSE_MEMORY["previous_hunt"] = GUILD_TASK_MEMORY.get("previous_hunt") or current_hunt or None
+    try:
+        page.locator("#bp-modal .bp-actions button", has_text="Ir pra").first.click(timeout=3000)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        PASSE_MEMORY["go_fails"] += 1
+        log(f"  Erro ao clicar em 'Ir pra caçada' ({name}): {error}")
+        return
+    log(f"  Indo pra hunt '{name}' (missao do passe)...")
+    for _ in range(10):
+        time.sleep(0.5)
+        try:
+            now_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            now_hunt = ""
+        if now_hunt == name:
+            PASSE_MEMORY["go_fails"] = 0
+            PASSE_MEMORY["grinding"] = True
+            PASSE_MEMORY["grinding_since"] = time.monotonic()
+            return
+    PASSE_MEMORY["go_fails"] += 1
+    log(f"  'Ir pra caçada' nao levou pra '{name}' ({PASSE_MEMORY['go_fails']}/{PASSE_MAX_GO_FAILS}).")
+
+
+def finish_pass_grinding(page, log):
+    """Acabaram as missoes elegiveis: volta pra hunt base (campanha > padrao >
+    de onde saiu) e libera o 'grinding'. Pede pra rotina da guild rodar ja -
+    ordem: chefes > passe > tasks da guild."""
+    DEFAULT_HUNT_MEMORY["name"] = load_settings().get("default_hunt", "")
+    target = CAMPAIGN_MEMORY.get("target_hunt") or DEFAULT_HUNT_MEMORY.get("name") or PASSE_MEMORY["previous_hunt"]
+    ok = True
+    if target:
+        log(f"  Missoes do passe concluidas - voltando para '{target}'...")
+        ok = find_and_go_to_hunt(
+            page, target, "#wave-title", '.tp-opt[data-tp="hunts"]', ".stage-row", ".stage-name-line b", ".stage-go", log
+        )
+    if ok:
+        PASSE_MEMORY["previous_hunt"] = None
+        PASSE_MEMORY["grinding"] = False
+        PASSE_MEMORY["grinding_since"] = None
+        PASSE_MEMORY["go_fails"] = 0
+        FORCE_RUN_NOW.add("tarefas_guild")
+
+
+def execute_dom_battlepass_step(page, step, log):
+    """Passo tipo 'dom_battlepass' (Missoes do Passe): com o Passe aberto,
+    entrega a missao pronta, escolhe a proxima (so Normal, nivel da hunt <= o
+    nosso, dificuldade marcada - ve choose_pass_mission) e leva o personagem
+    pra hunt dela. Quando nao sobra missao elegivel, volta pra hunt base.
+    Sem dificuldade marcada nao faz nada (a entrega automatica independe disso)."""
+    enabled = [d for d in step["difficulties"] if d.get("enabled")]
+    if not enabled:
+        return True
+    order = {d["card_class"]: i for i, d in enumerate(enabled)}
+    labels = {d["card_class"]: d.get("label", d["card_class"]) for d in step["difficulties"]}
+
+    if not open_pass_modal(page):
+        log("  Nao consegui abrir o Passe.")
+        return True
+
+    finished = False
+    try:
+        claim_pass_rewards(page, log)  # premios de degrau que ficaram esperando
+        for _ in range(4):  # entregar -> escolher -> ir pra hunt, no maximo
+            state = page.evaluate(PASS_STATE_JS)
+            if not state:
+                break
+            if state["mode"] == "active":
+                deliver = next((b for b in state["buttons"] if "entregar" in b["text"].lower() and not b["disabled"]), None)
+                if deliver is not None:
+                    if click_pass_deliver(page, log):
+                        pass_delivered(state["name"] or "?", log)
+                        claim_pass_rewards(page, log)
+                        continue
+                    break
+                go_to_pass_hunt(page, state["name"], state, log)
+                break
+            chose = choose_pass_mission(page, state, order, labels, log)
+            if chose is None:
+                break
+            if not chose:
+                finished = True
+                break
+    finally:
+        close_pass_modal(page)
+
+    if finished and PASSE_MEMORY.get("grinding"):
+        finish_pass_grinding(page, log)
+    return True
+
+
 def click_guild_task_button(page, sec_selector, card_selector, name_sel, foot_sel, matched_class, task_name, keyword, log, retries=3):
     """Acha de novo o botao certo (pelo nome+dificuldade da task e pelo TEXTO
     do botao), em TODAS as secoes (Diárias/Semanais), a cada tentativa - em
@@ -4359,6 +4834,12 @@ def execute_dom_guild_tasks_step(page, step, log):
         current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
     except Exception:
         current_hunt = ""
+
+    # regra de nivel: so aceita/caça a task cuja hunt tem nivel <= o nosso (nivel
+    # nao lido, ou hunt com nome diferente do da task = sem trava, como antes).
+    # Lido ANTES de abrir a guild - o overlay dela cobre o menu de Teleportes.
+    char_level = read_active_char_level(page, log)
+    hunt_levels = get_hunt_levels(page, log) if char_level is not None else {}
 
     social_selector = step.get("social_selector", "#tab-social")
     guild_selector = step.get("guild_selector", "#tab-guild")
@@ -4479,6 +4960,15 @@ def execute_dom_guild_tasks_step(page, step, log):
                 record_activity(f"Task da guild completa: '{task_name}' - entregue com sucesso.")
             continue
 
+        task_hunt_level = hunt_levels.get(task_name)
+        if char_level is not None and task_hunt_level is not None and task_hunt_level > char_level:
+            log_once(
+                f"guild-alto-{task_name}-{task_hunt_level}-{char_level}",
+                f"  Task da guild '{task_name}' ({diff_label}) pulada: hunt lvl {task_hunt_level} > nosso lvl {char_level}.",
+                log,
+            )
+            continue
+
         if accept_btn is not None:
             if accept_btn.get_attribute("disabled") is not None:
                 # ex: "Maximo de tasks diarias atingido" - nada a fazer, so segue.
@@ -4508,7 +4998,9 @@ def execute_dom_guild_tasks_step(page, step, log):
     page.keyboard.press("Escape")
     time.sleep(0.3)
 
-    if pending_task is not None:
+    if PASSE_MEMORY.get("grinding"):
+        pass  # missao do passe em andamento vem antes (chefes > passe > guild) - nao troca nem devolve a hunt agora
+    elif pending_task is not None:
         task_name, where_text = pending_task
         try:
             click_open_wave(page, open_selector)
@@ -5031,7 +5523,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
     go_selector = step.get("go_selector", ".stage-go")
 
     if not current_hunt:
-        if GUILD_TASK_MEMORY.get("grinding"):
+        if task_grinding():
             # ficou sem hunt ativa NO MEIO de uma task de guild (ex: falha
             # transitoria ao trocar) - tasks de guild tem prioridade maior que
             # o bestiary, entao nao escolhe uma hunt qualquer aqui; deixa a
@@ -5115,7 +5607,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
     if CAMPAIGN_MEMORY.get("target_hunt"):
         return True  # a Campanha de Codex decide pra qual hunt ir - sem avanco automatico competindo
 
-    if GUILD_TASK_MEMORY.get("grinding"):
+    if task_grinding():
         # tasks de guild tem prioridade maior que o avanco automatico de hunt
         # (ordem: chefes > tasks de guild > bestiary > codex) - nao avanca
         # enquanto uma task ainda estiver sendo realizada, senao interrompe o
@@ -5753,6 +6245,17 @@ def ensure_active_hunt(page, log):
         GUILD_TASK_MEMORY["previous_hunt"] = None
         GUILD_TASK_MEMORY["grinding_since"] = None
 
+    if PASSE_MEMORY.get("grinding"):
+        # mesma trava da guild: a rotina do passe renova 'grinding_since' a cada
+        # rodada em que a missao segue em andamento.
+        grinding_since = PASSE_MEMORY.get("grinding_since")
+        if grinding_since is None or time.monotonic() - grinding_since < GUILD_TASK_GRINDING_MAX_SECONDS:
+            return  # missao do passe em andamento - ela mesma resolve a hunt
+        log(f"  'grinding' de missao do passe preso ha mais de {GUILD_TASK_GRINDING_MAX_SECONDS // 60}min - liberando.")
+        PASSE_MEMORY["grinding"] = False
+        PASSE_MEMORY["previous_hunt"] = None
+        PASSE_MEMORY["grinding_since"] = None
+
     try:
         current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
     except Exception as error:
@@ -5815,6 +6318,8 @@ def execute_step(page, step, stop_event, log, all_routines=None):
         return execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=all_routines)
     if step_type == "dom_guild_tasks":
         return execute_dom_guild_tasks_step(page, step, log)
+    if step_type == "dom_battlepass":
+        return execute_dom_battlepass_step(page, step, log)
     if step_type == "dom_codex_campaign":
         return execute_dom_codex_campaign_step(page, step, log)
     if step_type == "dom_potion_stock":
@@ -6022,6 +6527,16 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                             log(f"Erro ao garantir hunt ativa: {error}")
                         next_hunt_check = time.monotonic() + HUNT_CHECK_INTERVAL_SECONDS
 
+                    # entrega do Passe: so le o contador da tela (barato) a cada
+                    # tick e entrega quando bate a meta - independe da rotina
+                    # 'Missoes do Passe' estar ligada.
+                    try:
+                        deliver_pass_if_ready(page, log)
+                    except Exception as error:
+                        if is_connection_dead_error(error):
+                            raise
+                        log(f"Erro ao entregar a missao do passe: {error}")
+
                     if CODEX_REFRESH_REQUEST["pending"]:
                         CODEX_REFRESH_REQUEST["pending"] = False
                         try:
@@ -6049,7 +6564,7 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                     # de prioridade maior em andamento, pro reload nao cortar um
                     # chefe ou uma task de guild pela metade.
                     if now >= next_page_reload:
-                        if GUILD_TASK_MEMORY.get("grinding") or TRAINING_MEMORY.get("waiting"):
+                        if task_grinding() or TRAINING_MEMORY.get("waiting"):
                             next_page_reload = now + TICK_SECONDS  # tenta de novo no proximo tick
                         else:
                             try:
@@ -6080,6 +6595,8 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                         # parado a toa por muito tempo.
                         active_seconds = trigger.get("active_seconds")
                         if active_seconds is not None and routine["id"] == "tarefas_guild" and GUILD_TASK_MEMORY.get("grinding"):
+                            interval = min(interval, active_seconds)
+                        if active_seconds is not None and routine["id"] == "missoes_passe" and PASSE_MEMORY.get("grinding"):
                             interval = min(interval, active_seconds)
                         # FORCE_RUN_NOW: a GUI usa isso pra pedir "roda essa rotina
                         # JA', sem esperar o intervalo normal" (ex: configuracao da
