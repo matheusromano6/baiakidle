@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.20.0"
+VERSION = "4.21.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3546,6 +3546,168 @@ def read_bosstiary_kills(page, log):
         page.keyboard.press("Escape")
 
 
+# ---------- Boss Slots (Cyclopedia > Boss Slots) ----------
+
+# 'slots' = nomes dos chefes nos 2 slots (None = slot vazio), lido nesta
+# sequencia de chefes (None = ainda nao lido - relê a cada sequencia nova);
+# 'blocked' = (dia, pagar_tudo, teto) em que faltou gold/teto pra remover - nao
+# reabre o Cyclopedia a cada chefe pra descobrir de novo (o preco so sobe no dia);
+# 'unpickable' = chefes que nao aparecem na lista do slot (nao tenta de novo).
+BOSS_SLOTS_MEMORY = {"slots": None, "blocked": None, "unpickable": set()}
+
+BOSS_SLOTS_READ_JS = """() => ({
+    gold: ((document.querySelector('#cyc-gold') || {}).textContent || ''),
+    slots: Array.from(document.querySelectorAll('.bs-panel .bs-slot')).map(s => {
+        const btn = s.querySelector('button.bs-btn');
+        return {
+            title: ((s.querySelector('.bs-box-title') || {}).textContent || '').trim(),
+            remove: btn ? (btn.textContent || '').trim() : null,
+            picking: !!s.querySelector('.bs-picklist'),
+        };
+    }),
+})"""
+
+
+def boss_slots_config():
+    """Escolhas do usuario (settings.json -> 'boss_slots'): {'enabled': bool,
+    'pay_all': bool, 'daily_cap': gold por dia}. Sem nada salvo = desligado."""
+    raw = load_settings().get("boss_slots") or {}
+    try:
+        cap = max(0, int(raw.get("daily_cap") or 0))
+    except (TypeError, ValueError):
+        cap = 0
+    return {"enabled": bool(raw.get("enabled")), "pay_all": bool(raw.get("pay_all")), "daily_cap": cap}
+
+
+def gold_text(value):
+    return f"{value:,}".replace(",", ".")
+
+
+def boss_slots_spent_today():
+    data = load_state().get("boss_slots") or {}
+    return int(data.get("spent") or 0) if data.get("day") == time.strftime("%Y-%m-%d") else 0
+
+
+def add_boss_slots_spent(cost):
+    state = load_state()
+    state["boss_slots"] = {"day": time.strftime("%Y-%m-%d"), "spent": boss_slots_spent_today() + cost}
+    save_state(state)
+
+
+def read_boss_slots(page):
+    """(gold do lider, [{'name': chefe ou None (vazio), 'cost': preco do
+    'Remover' em gold (0 = gratis)}]) com a aba Boss Slots aberta."""
+    data = page.evaluate(BOSS_SLOTS_READ_JS)
+    gold_digits = re.sub(r"\D", "", data["gold"])
+    slots = []
+    for slot in data["slots"]:
+        name = None if slot["picking"] else (slot["title"].split(":", 1)[1].strip() if ":" in slot["title"] else None)
+        cost_match = re.search(r"\(([\d.]+)\s*gold", slot["remove"] or "")
+        slots.append({"name": name or None, "cost": int(cost_match.group(1).replace(".", "")) if cost_match else 0})
+    return (int(gold_digits) if gold_digits else None), slots
+
+
+def open_boss_slots(page):
+    """Abre Cyclopedia > Boss Slots. True se os slots apareceram."""
+    try:
+        try:
+            page.click("#tab-cyclopedia", timeout=3000)
+        except Exception:
+            page.click("#tab-cyclopedia", timeout=3000, force=True)
+        tab_class = page.eval_on_selector('.cyc-tabbtn[data-tab="bossslots"]', "el => el.className") or ""
+        if "on" not in tab_class.split():
+            page.click('.cyc-tabbtn[data-tab="bossslots"]', timeout=3000)
+        page.wait_for_selector(".bs-panel .bs-slot", timeout=4000)
+        return True
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return False
+
+
+def close_cyclopedia(page):
+    try:
+        page.click("#cyclopedia-modal-close", timeout=3000)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        page.keyboard.press("Escape")
+
+
+def pick_boss_slot(page, index, name):
+    """Slot 'index' vazio (lista 'Escolher boss'): escolhe 'name' (gratis, sem
+    confirmacao). True se o slot passou a mostrar esse chefe."""
+    safe_name = name.replace('"', '\\"')
+    slot = page.locator(".bs-panel .bs-slot").nth(index)
+    pick = slot.locator(f'.bs-pick:has(.cyc-cell-name:text-is("{safe_name}"))')
+    if pick.count() == 0:
+        return False
+    pick.first.click(timeout=3000)
+    for _ in range(10):
+        time.sleep(0.2)
+        _, slots = read_boss_slots(page)
+        if index < len(slots) and slots[index]["name"] == name:
+            return True
+    return False
+
+
+def ensure_boss_slots(page, wanted, log):
+    """Garante os chefes de 'wanted' ([o que vai lutar agora, o proximo pronto])
+    nos 2 Boss Slots - mais chance de loot no combate. So mexe no slot que
+    NAO tem nenhum deles. Remover custa gold e o preco sobe a cada troca no dia
+    (1a gratis, depois 100k, 400k...): so remove se tiver gold pro preco do
+    botao e se couber no teto do dia (ou 'pagar tudo'); senao segue sem trocar.
+    Escolher o chefe no slot vazio e gratis. Se o chefe nao aparecer na lista
+    do slot depois de remover, devolve o que estava (gratis)."""
+    cfg = boss_slots_config()
+    today = time.strftime("%Y-%m-%d")
+    if BOSS_SLOTS_MEMORY["blocked"] == (today, cfg["pay_all"], cfg["daily_cap"]):
+        return
+    if not open_boss_slots(page):
+        log("  Nao consegui abrir os Boss Slots - segue sem trocar.")
+        return
+    try:
+        for name in wanted:
+            gold, slots = read_boss_slots(page)
+            names = [s["name"] for s in slots]
+            BOSS_SLOTS_MEMORY["slots"] = names
+            if name in names:
+                continue
+            index = next((i for i, s in enumerate(slots) if s["name"] is None), None)
+            removed = None
+            if index is None:
+                index = next((i for i, s in enumerate(slots) if s["name"] not in wanted), None)
+                if index is None:
+                    break  # os 2 slots ja tem chefes desta sequencia
+                cost = slots[index]["cost"]
+                spent = boss_slots_spent_today()
+                if gold is None or gold < cost or (not cfg["pay_all"] and spent + cost > cfg["daily_cap"]):
+                    BOSS_SLOTS_MEMORY["blocked"] = (today, cfg["pay_all"], cfg["daily_cap"])
+                    log(f"  Boss Slots: trocar custa {gold_text(cost)} gold (gasto hoje {gold_text(spent)}) - sem gold ou acima do teto, segue sem trocar.")
+                    break
+                removed = slots[index]["name"]
+                page.locator(".bs-panel .bs-slot").nth(index).locator("button.bs-btn").first.click(timeout=3000)
+                page.locator(".bs-panel .bs-slot").nth(index).locator(".bs-picklist").wait_for(timeout=3000)
+                add_boss_slots_spent(cost)
+                log(f"  Boss Slot {index + 1}: '{removed}' removido ({gold_text(cost)} gold).")
+            if pick_boss_slot(page, index, name):
+                log(f"  Boss Slot {index + 1}: '{name}' colocado.")
+            else:
+                BOSS_SLOTS_MEMORY["unpickable"].add(name)
+                log(f"  '{name}' nao aparece na lista do Boss Slot - nao tento mais com ele.")
+                if removed and not pick_boss_slot(page, index, removed):
+                    log(f"  ATENCAO: Boss Slot {index + 1} ficou vazio - nao consegui devolver '{removed}'.")
+        _, slots = read_boss_slots(page)
+        BOSS_SLOTS_MEMORY["slots"] = [s["name"] for s in slots]
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        log(f"  Erro ao ajustar os Boss Slots: {error}")
+        BOSS_SLOTS_MEMORY["slots"] = None
+    finally:
+        close_cyclopedia(page)
+
+
 def run_between_fights_routines(page, stop_event, log, all_routines):
     """Chamada entre um chefe e o proximo (dentro da MESMA sequencia de
     combates). So dispara 'Entregar Codex e Vender Loot' - resolve na hora
@@ -3625,6 +3787,8 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     name_selector = step.get("name_selector", ".boss-cell-name")
     go_selector = step.get("go_selector", ".boss-fight")
 
+    BOSS_SLOTS_MEMORY["slots"] = None  # relê os Boss Slots uma vez por sequencia (o usuario pode ter mexido)
+
     target_name = None  # garante que exista mesmo se stop_event ja estiver setado ao entrar no laco
     fought_any = False
     potions_prepared = False  # pocoes (compra/uso) so' uma vez por sequencia, antes do 1o chefe
@@ -3677,13 +3841,41 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
 
         target_name = None
         target_needs_stone_skin = False
+        next_name = None  # o proximo da fila (pros Boss Slots)
         for boss in step["bosses"]:
             if boss.get("enabled") and boss["name"] in ready_names:
                 if amulet_blocked and boss.get("stone_skin"):
                     continue  # sem Stone Skin confirmado NAO enfrenta (pode matar os chares)
-                target_name = boss["name"]
-                target_needs_stone_skin = bool(boss.get("stone_skin"))
+                if target_name is None:
+                    target_name = boss["name"]
+                    target_needs_stone_skin = bool(boss.get("stone_skin"))
+                    continue
+                next_name = boss["name"]
                 break
+
+        slots_cfg = boss_slots_config()
+        slots_blocked = BOSS_SLOTS_MEMORY["blocked"] == (time.strftime("%Y-%m-%d"), slots_cfg["pay_all"], slots_cfg["daily_cap"])
+        if target_name is not None and slots_cfg["enabled"] and not slots_blocked:
+            # Boss Slots: o chefe de agora e o proximo da fila nos 2 slots (mais
+            # chance de loot). No fim da fila (sem proximo) so garante o atual.
+            # So abre o Cyclopedia quando falta algum deles nos slots. Mesma
+            # limitacao do amuleto: a lista de chefes e o Cyclopedia sao modais.
+            wanted = [n for n in (target_name, next_name) if n and n not in BOSS_SLOTS_MEMORY["unpickable"]]
+            known = BOSS_SLOTS_MEMORY["slots"]
+            if wanted and (known is None or any(n not in known for n in wanted)):
+                page.keyboard.press("Escape")
+                time.sleep(0.3)
+                ensure_boss_slots(page, wanted, log)
+                try:
+                    click_open_wave(page, open_selector)
+                    page.click(boss_menu_selector, timeout=3000)
+                    ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
+                    if "on" not in ready_class.split():
+                        page.click(ready_selector, timeout=3000)
+                    time.sleep(0.3)
+                except Exception as error:
+                    log(f"  Erro ao reabrir a lista de Chefes apos os Boss Slots: {error}")
+                    return False
 
         if target_name is not None:
             # pra chefes marcados 'stone_skin' (BossPicker), troca o amuleto do

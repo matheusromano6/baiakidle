@@ -64,10 +64,10 @@ class BossPicker(ctk.CTkToplevel):
     primeiro da lista e escolhido. Pode ser reordenada importando um .txt
     (botao 'Importar', ve o tooltip)."""
 
-    def __init__(self, master, bosses, on_saved=None, kills=None, on_refresh=None):
+    def __init__(self, master, bosses, on_saved=None, kills=None, on_refresh=None, slots_config=None):
         super().__init__(master)
         self.title("Escolher chefes")
-        self.geometry("420x600")
+        self.geometry("440x690")
         self.configure(fg_color=theme.BG)
         self.on_saved = on_saved
         self.on_refresh = on_refresh
@@ -122,6 +122,40 @@ class BossPicker(ctk.CTkToplevel):
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color=theme.PANEL, corner_radius=8)
         self.list_frame.pack(fill="both", expand=True, padx=12, pady=6)
+
+        # Boss Slots (Cyclopedia): antes de cada chefe o bot coloca ele e o
+        # proximo da fila nos 2 slots (mais chance de loot). Remover um chefe do
+        # slot custa gold e o preco sobe a cada troca no dia - por isso o teto.
+        slots = dict(slots_config or {})
+        slots_box = ctk.CTkFrame(self, fg_color=theme.PANEL, corner_radius=8)
+        slots_box.pack(fill="x", padx=12, pady=(0, 6))
+        self.slots_enabled_var = tk.BooleanVar(value=bool(slots.get("enabled")))
+        ctk.CTkCheckBox(
+            slots_box, text="Boss Slots: pôr o chefe e o próximo antes do combate",
+            variable=self.slots_enabled_var, font=theme.FONT_BODY, text_color=theme.TEXT,
+            fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+        pay_row = ctk.CTkFrame(slots_box, fg_color="transparent")
+        pay_row.pack(fill="x", padx=10, pady=(0, 8))
+        self.slots_mode_var = tk.StringVar(value="all" if slots.get("pay_all") else "cap")
+        ctk.CTkRadioButton(
+            pay_row, text="Pagar tudo", variable=self.slots_mode_var, value="all",
+            font=theme.FONT_BODY, text_color=theme.TEXT, fg_color=theme.ACCENT,
+        ).pack(side="left")
+        ctk.CTkRadioButton(
+            pay_row, text="Teto/dia:", variable=self.slots_mode_var, value="cap",
+            font=theme.FONT_BODY, text_color=theme.TEXT, fg_color=theme.ACCENT,
+        ).pack(side="left", padx=(10, 0))
+        cap = slots.get("daily_cap", 500000)
+        self.slots_cap_var = tk.StringVar(value=f"{int(cap):,}".replace(",", "."))
+        ctk.CTkEntry(pay_row, textvariable=self.slots_cap_var, width=110, fg_color=theme.PANEL_ALT).pack(side="left")
+        ctk.CTkLabel(pay_row, text="gold", font=theme.FONT_BODY, text_color=theme.MUTED).pack(side="left", padx=(4, 0))
+        _Tooltip(
+            slots_box,
+            "Remover um chefe do slot custa gold e o preco sobe a cada troca\n"
+            "no dia (1a gratis, depois 100k, 400k...). O bot so remove se tiver\n"
+            "gold e, no modo teto, se o total gasto no dia couber no teto.",
+        )
 
         button_bar = ctk.CTkFrame(self, fg_color="transparent")
         button_bar.pack(fill="x", padx=12, pady=(0, 12))
@@ -297,6 +331,12 @@ class BossPicker(ctk.CTkToplevel):
             messagebox.showinfo("Importação concluída", summary, parent=self)
 
     def save(self):
+        digits = "".join(ch for ch in self.slots_cap_var.get() if ch.isdigit())
+        slots_config = {
+            "enabled": bool(self.slots_enabled_var.get()),
+            "pay_all": self.slots_mode_var.get() == "all",
+            "daily_cap": int(digits) if digits else 0,
+        }
         if self.on_saved:
-            self.on_saved(self.bosses)
+            self.on_saved(self.bosses, slots_config)
         self.destroy()

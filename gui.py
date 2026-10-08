@@ -1235,9 +1235,12 @@ class BotGUI:
                     continue
 
                 def open_boss_picker(step=step):
-                    def on_saved(bosses):
+                    def on_saved(bosses, slots_config):
                         step["bosses"] = bosses
                         bot.save_routines(self.routines)
+                        self.settings["boss_slots"] = slots_config
+                        bot.save_settings(self.settings)
+                        bot.BOSS_SLOTS_MEMORY["blocked"] = None  # teto/modo novo: pode voltar a trocar
                         # a lista de chefes prontos so e reconsultada quando
                         # 'next_check' vence (pode ser so daqui a varias horas,
                         # calculado com a lista ANTERIOR) - sem resetar aqui, um
@@ -1262,6 +1265,7 @@ class BotGUI:
                     BossPicker(
                         self.root, step.get("bosses", []), on_saved=on_saved,
                         kills=bot.BOSS_KILLS_MEMORY, on_refresh=on_refresh,
+                        slots_config=bot.boss_slots_config(),
                     )
 
                 potion_items = bot.potion_config()["items"]
