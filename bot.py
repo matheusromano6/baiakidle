@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.21.0"
+VERSION = "4.21.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -4921,7 +4921,10 @@ def execute_dom_battlepass_step(page, step, log):
     enabled = [d for d in step["difficulties"] if d.get("enabled")]
     if not enabled:
         return True
-    order = {d["card_class"]: i for i, d in enumerate(enabled)}
+    # da DIFICIL pra facil (mais pontos por missao - o passe tem limite de
+    # degrau por dia); a regra de nivel faz cair pra menor quando a difícil
+    # e alta demais. (Na guild continua da facil pra dificil.)
+    order = {d["card_class"]: i for i, d in enumerate(reversed(enabled))}
     labels = {d["card_class"]: d.get("label", d["card_class"]) for d in step["difficulties"]}
 
     if not open_pass_modal(page):
