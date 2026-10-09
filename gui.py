@@ -271,6 +271,22 @@ class BotGUI:
             width=140,
         ).pack(side="left", padx=6)
 
+        # esconde a janela do Chrome/Opera (some da barra de tarefas) - o bot
+        # continua jogando normal; o mesmo botao (ou a bandeja) mostra de volta.
+        self.browser_button = ctk.CTkButton(
+            bar,
+            text="Esconder navegador",
+            command=self.toggle_browser_hidden,
+            fg_color=theme.PANEL_ALT,
+            hover_color=theme.BORDER,
+            text_color=theme.TEXT,
+            font=theme.FONT_BODY,
+            border_width=1,
+            border_color=theme.BORDER,
+            width=150,
+        )
+        self.browser_button.pack(side="left", padx=6)
+
         ctk.CTkButton(
             bar,
             text="Acompanhar Mercado",
@@ -370,6 +386,18 @@ class BotGUI:
         seletor de navegador no cabecalho) - escolher qual navegador e uma
         decisao de configuracao, separada da acao de abrir o jogo."""
         threading.Thread(target=bot.launch_browser, args=(self.log,), daemon=True).start()
+
+    def toggle_browser_hidden(self):
+        if not bot.browser_hide_supported():
+            self.log("Esconder o navegador so funciona com Chrome/Opera no Windows (o IdleDeck ja tem a bandeja dele).")
+            return
+        hide = not bot.browser_hidden()
+        try:
+            if bot.set_browser_hidden(hide, self.log):
+                self.log("Navegador escondido - o bot continua jogando normal." if hide else "Navegador de volta na tela.")
+        except Exception as error:
+            self.log(f"Erro ao {'esconder' if hide else 'mostrar'} o navegador: {error}")
+        self.browser_button.configure(text="Mostrar navegador" if bot.browser_hidden() else "Esconder navegador")
 
     def open_new_window(self):
         """Abre uma 2a instancia do bot (processo novo, independente) ja no
@@ -1721,6 +1749,10 @@ class BotGUI:
             label = bot.BROWSER_PROFILES[self.current_profile]["label"]
             menu = pystray.Menu(
                 pystray.MenuItem("Abrir", lambda icon, item: self.tray_queue.put("open"), default=True),
+                pystray.MenuItem(
+                    lambda item: "Mostrar navegador" if bot.browser_hidden() else "Esconder navegador",
+                    lambda icon, item: self.tray_queue.put("browser"),
+                ),
                 pystray.MenuItem("Fechar de vez", lambda icon, item: self.tray_queue.put("quit")),
             )
             self.tray_icon = pystray.Icon("BaiakIdleBot", image, f"BAIAK IDLE BOT — {label}", menu)
@@ -1758,6 +1790,8 @@ class BotGUI:
                 action = self.tray_queue.get_nowait()
                 if action == "open":
                     self.show_from_tray()
+                elif action == "browser":
+                    self.toggle_browser_hidden()
                 elif action == "quit":
                     self.on_close()
                     return
@@ -1766,6 +1800,8 @@ class BotGUI:
         self.root.after(300, self.poll_tray_queue)
 
     def on_close(self):
+        if bot.browser_hidden():
+            bot.set_browser_hidden(False, self.log)  # nunca deixa o navegador preso escondido
         self.stop_event.set()
         self.pause_event.clear()
         self.stop_tray_icon()

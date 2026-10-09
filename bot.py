@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.21.2"
+VERSION = "4.22.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -927,6 +927,11 @@ def launch_browser(log=print):
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-session-crashed-bubble",
+            # o jogo segue no ritmo normal com a janela escondida/minimizada/coberta
+            # (sem isso o navegador "economiza" timers e renderizacao em 2o plano)
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
             GAME_URL,
         ]
     )
@@ -6035,7 +6040,102 @@ def bring_game_to_front(page):
     bandeja/minimizada) e mexeria no foco dos outros jogos dele."""
     if BROWSER_PROFILES[CURRENT_PROFILE].get("launcher") in ("idledeck", "idledeck_copy"):
         return
+    if browser_hidden():
+        return  # escondido pelo usuario: no Opera o bringToFront faz a janela reaparecer
     page.bring_to_front()
+
+
+# ---------- esconder/mostrar a janela do navegador (Windows) ----------
+
+# Janelas do navegador (HWND) que o bot escondeu - so ele sabe trazer de volta.
+# O jogo continua rodando normal escondido (testado: timers e frames no mesmo
+# ritmo, cliques pelo CDP funcionam); as flags '--disable-*-throttling' do
+# launch_browser garantem que o navegador nao passe a "economizar" depois.
+BROWSER_WINDOW_MEMORY = {"hidden": [], "pid": None}
+
+
+def browser_hidden():
+    """True se o bot escondeu janelas do navegador que ainda existem (fechar e
+    reabrir o navegador cria janelas novas, ja visiveis)."""
+    if not BROWSER_WINDOW_MEMORY["hidden"]:
+        return False
+    import ctypes
+
+    alive = [hwnd for hwnd in BROWSER_WINDOW_MEMORY["hidden"] if ctypes.windll.user32.IsWindow(hwnd)]
+    BROWSER_WINDOW_MEMORY["hidden"] = alive
+    return bool(alive)
+
+
+def browser_hide_supported():
+    return platform.system() == "Windows" and not BROWSER_PROFILES[CURRENT_PROFILE].get("launcher")
+
+
+def debug_port_owner_pid(port):
+    """PID do processo do navegador que escuta na porta de depuracao (e o
+    processo principal - dono das janelas). None se ninguem escuta."""
+    out = subprocess.run(
+        ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, creationflags=0x08000000
+    ).stdout
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[1].endswith(f":{port}") and parts[3] == "LISTENING":
+            return int(parts[4])
+    return None
+
+
+def browser_top_windows(pid):
+    """[(hwnd, visivel)] das janelas principais do navegador 'pid' (classe
+    Chrome_WidgetWin*, com titulo, sem dono - Chrome e Opera)."""
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def callback(hwnd, _):
+        owner_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+        if owner_pid.value != pid or user32.GetWindow(hwnd, 4):  # 4 = GW_OWNER
+            return True
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, cls, 64)
+        if cls.value.startswith("Chrome_WidgetWin") and user32.GetWindowTextLengthW(hwnd) > 0:
+            found.append((hwnd, bool(user32.IsWindowVisible(hwnd))))
+        return True
+
+    user32.EnumWindows(callback, 0)
+    return found
+
+
+def set_browser_hidden(hidden, log=print):
+    """Esconde (some da barra de tarefas) ou mostra de volta as janelas do
+    navegador do perfil ativo. Retorna True se mudou algo."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    if not hidden:
+        windows, BROWSER_WINDOW_MEMORY["hidden"] = BROWSER_WINDOW_MEMORY["hidden"], []
+        for hwnd in windows:
+            if user32.IsWindow(hwnd):
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+        if windows and user32.IsWindow(windows[0]):
+            user32.SetForegroundWindow(windows[0])
+        return bool(windows)
+
+    pid = debug_port_owner_pid(cdp_port())
+    if pid is None:
+        log("Navegador nao esta aberto - nada pra esconder.")
+        return False
+    windows = [hwnd for hwnd, visible in browser_top_windows(pid) if visible]
+    if not windows:
+        log("Nao achei a janela do navegador pra esconder.")
+        return False
+    for hwnd in windows:
+        user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    BROWSER_WINDOW_MEMORY["hidden"] = BROWSER_WINDOW_MEMORY["hidden"] + windows
+    BROWSER_WINDOW_MEMORY["pid"] = pid
+    return True
 
 
 def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selector, vocation, log):
