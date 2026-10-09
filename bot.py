@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.22.0"
+VERSION = "4.22.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -6676,6 +6676,40 @@ def run_routine(page, routine, stop_event, log, all_routines=None):
             return
 
 
+# Jogo pronto pra cliques: a tela "BAIAK IDLE - Carregando / Conectando /
+# Montando o mapa" ('#loading-overlay') fica POR CIMA de tudo por ~9s depois de
+# (re)carregar - as abas ja aparecem antes disso, mas os cliques nao pegam
+# (confirmado ao vivo: 1o clique que funcionou foi ~3s depois dela sumir).
+GAME_READY_JS = """() => {
+    const vis = e => {
+        if (!e) return false;
+        const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+    };
+    const wave = ((document.querySelector('#wave-title') || {}).textContent || '').trim();
+    return !vis(document.querySelector('#loading-overlay')) && vis(document.querySelector('#tab-battlepass'))
+        && wave !== '' && wave !== '—';
+}"""
+GAME_READY_SETTLE_SECONDS = 3
+
+
+def wait_game_ready(page, log, timeout=60):
+    """Espera a tela de carregamento do jogo sumir (e mais uns segundos de
+    folga) antes das rotinas comecarem a clicar. True se ficou pronto."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if page.evaluate(GAME_READY_JS):
+                time.sleep(GAME_READY_SETTLE_SECONDS)
+                return True
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+        time.sleep(0.5)
+    log(f"  O jogo nao terminou de carregar em {timeout}s - seguindo assim mesmo.")
+    return False
+
+
 def ensure_game_loaded(page, log):
     """Confere se a pagina do jogo carregou de verdade (nao ficou em branco).
     Ao abrir o Chrome pela primeira vez (--remote-debugging-port + URL do
@@ -6693,6 +6727,8 @@ def ensure_game_loaded(page, log):
         page.wait_for_selector("#app", timeout=15000)
     except Exception as error:
         log(f"  Erro ao recarregar a pagina do jogo: {error}")
+    finally:
+        wait_game_ready(page, log)  # tambem no inicio do bot: a pagina pode estar carregando
 
 
 def reload_game_page(page, log):
@@ -6719,6 +6755,7 @@ def reload_game_page(page, log):
     except Exception as error:
         log(f"  Erro ao recarregar a pagina do jogo: {error}")
         return
+    wait_game_ready(page, log)  # sem isso as rotinas clicavam por baixo da tela de carregamento
     recover(page, log)
 
     cdp = None
