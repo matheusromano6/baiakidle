@@ -67,7 +67,7 @@ class BossPicker(ctk.CTkToplevel):
     def __init__(self, master, bosses, on_saved=None, kills=None, on_refresh=None, slots_config=None):
         super().__init__(master)
         self.title("Escolher chefes")
-        self.geometry("440x690")
+        self.geometry("520x690")
         self.configure(fg_color=theme.BG)
         self.on_saved = on_saved
         self.on_refresh = on_refresh
@@ -131,7 +131,7 @@ class BossPicker(ctk.CTkToplevel):
         slots_box.pack(fill="x", padx=12, pady=(0, 6))
         self.slots_enabled_var = tk.BooleanVar(value=bool(slots.get("enabled")))
         ctk.CTkCheckBox(
-            slots_box, text="Boss Slots: pôr o chefe e o próximo antes do combate",
+            slots_box, text="Boss Slots: pôr os chefes marcados 🎯 Slot antes do combate",
             variable=self.slots_enabled_var, font=theme.FONT_BODY, text_color=theme.TEXT,
             fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
         ).pack(anchor="w", padx=10, pady=(8, 4))
@@ -217,6 +217,29 @@ class BossPicker(ctk.CTkToplevel):
                 width=1,
             )
             ss_check.pack(side="right")
+            # 'boss_slot': antes de enfrentar esse chefe o bot coloca ele num dos
+            # 2 Boss Slots (Cyclopedia) - mais chance de loot. So' os marcados
+            # aqui, porque cada troca de slot fica mais cara no dia.
+            slot_var = tk.BooleanVar(value=boss.get("boss_slot", False))
+            slot_var.trace_add("write", lambda *_, b=boss, v=slot_var: b.__setitem__("boss_slot", v.get()))
+            slot_check = ctk.CTkCheckBox(
+                row,
+                text="🎯 Slot",
+                variable=slot_var,
+                fg_color=theme.ACCENT,
+                hover_color=theme.ACCENT_HOVER,
+                text_color=theme.MUTED,
+                font=theme.FONT_BODY,
+                width=1,
+            )
+            slot_check.pack(side="right", padx=(0, 8))
+            _Tooltip(
+                slot_check,
+                "Coloca esse chefe num Boss Slot antes do combate\n"
+                "(mais chance de loot) e ja adianta o proximo chefe\n"
+                "marcado da fila no outro slot. Precisa da opcao\n"
+                "'Boss Slots' ligada no fim desta janela.",
+            )
             _Tooltip(
                 ss_check,
                 "Antes de enfrentar esse chefe, troca o amuleto\n"

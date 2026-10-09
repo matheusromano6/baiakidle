@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.21.1"
+VERSION = "4.21.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3841,7 +3841,8 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
 
         target_name = None
         target_needs_stone_skin = False
-        next_name = None  # o proximo da fila (pros Boss Slots)
+        target_in_slot = False  # o usuario marcou 'Slot' (BossPicker) pra esse chefe
+        next_name = None  # o proximo chefe da fila marcado 'Slot' (adianta ele no outro slot)
         for boss in step["bosses"]:
             if boss.get("enabled") and boss["name"] in ready_names:
                 if amulet_blocked and boss.get("stone_skin"):
@@ -3849,18 +3850,25 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                 if target_name is None:
                     target_name = boss["name"]
                     target_needs_stone_skin = bool(boss.get("stone_skin"))
+                    target_in_slot = bool(boss.get("boss_slot"))
                     continue
-                next_name = boss["name"]
-                break
+                if boss.get("boss_slot"):
+                    next_name = boss["name"]
+                    break
 
         slots_cfg = boss_slots_config()
         slots_blocked = BOSS_SLOTS_MEMORY["blocked"] == (time.strftime("%Y-%m-%d"), slots_cfg["pay_all"], slots_cfg["daily_cap"])
         if target_name is not None and slots_cfg["enabled"] and not slots_blocked:
-            # Boss Slots: o chefe de agora e o proximo da fila nos 2 slots (mais
-            # chance de loot). No fim da fila (sem proximo) so garante o atual.
+            # Boss Slots: o chefe de agora (se marcado 'Slot') e o proximo marcado
+            # 'Slot' da fila nos 2 slots (mais chance de loot) - so os que o
+            # usuario escolheu, porque cada troca fica mais cara. Sem proximo
+            # marcado, so garante o atual.
             # So abre o Cyclopedia quando falta algum deles nos slots. Mesma
             # limitacao do amuleto: a lista de chefes e o Cyclopedia sao modais.
-            wanted = [n for n in (target_name, next_name) if n and n not in BOSS_SLOTS_MEMORY["unpickable"]]
+            wanted = [
+                n for n in ((target_name if target_in_slot else None), next_name)
+                if n and n not in BOSS_SLOTS_MEMORY["unpickable"]
+            ]
             known = BOSS_SLOTS_MEMORY["slots"]
             if wanted and (known is None or any(n not in known for n in wanted)):
                 page.keyboard.press("Escape")
