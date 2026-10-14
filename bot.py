@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.22.1"
+VERSION = "4.22.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -6177,12 +6177,23 @@ def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selec
         return None
 
     if "active" not in (target.get_attribute("class") or "").split():
-        try:
-            target.click(timeout=2000)
-            page.wait_for_timeout(400)
-        except Exception as error:
-            log(f"  Erro ao selecionar o personagem '{vocation}' na arvore: {error}")
-            return None
+        # logo depois de 'Vender tudo' o jogo as vezes demora >2s pra responder
+        # ao clique (visto 2x no log) - confere se pegou e tenta mais uma vez.
+        for attempt in (1, 2):
+            try:
+                target.click(timeout=2000 if attempt == 1 else 5000)
+                page.wait_for_timeout(400)
+                break
+            except Exception as error:
+                page.wait_for_timeout(1000)
+                try:
+                    if "active" in (target.get_attribute("class") or "").split():
+                        break  # o clique pegou, so demorou pra responder
+                except Exception:
+                    pass
+                if attempt == 2:
+                    log(f"  Erro ao selecionar o personagem '{vocation}' na arvore: {error}")
+                    return None
 
     return target
 
@@ -6802,6 +6813,16 @@ def test_routine_once(routine, log=print):
         log("Teste concluido.")
 
 
+def playwright_driver_missing():
+    """No .exe, o driver do Playwright e extraido junto com o bot numa pasta
+    temporaria; se uma limpeza apagar os arquivos com o bot aberto, toda nova
+    conexao falha com um erro enigmatico ('PlaywrightContextManager' ... '_playwright')."""
+    import playwright
+
+    cli = os.path.join(os.path.dirname(playwright.__file__), "driver", "package", "cli.js")
+    return getattr(sys, "frozen", False) and not os.path.exists(cli)
+
+
 def run(stop_event, flags, routines, log=print, pause_event=None):
     """flags: dict {routine_id: threading.Event}. routines: lista carregada de routines.json.
 
@@ -6956,6 +6977,11 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                             last_run[routine["id"]] = time.monotonic()
                     stop_event.wait(TICK_SECONDS)
         except Exception as error:
+            if playwright_driver_missing():
+                # reconectar nao adianta: os arquivos so voltam reabrindo o .exe
+                log("Os arquivos internos do bot foram apagados por uma limpeza de temporarios "
+                    "(Windows/antivirus). Feche o bot de vez e abra de novo.")
+                break
             log(f"Erro de conexao: {error}")
             if not stop_event.is_set():
                 log(f"Tentando reconectar em {RESTART_DELAY_SECONDS}s...")

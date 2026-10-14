@@ -64,9 +64,11 @@ Se o usuário estiver com o bot rodando (processo `BaiakIdleBot`), o
 ```powershell
 $driver = python -c "import playwright, os; print(os.path.join(os.path.dirname(playwright.__file__), 'driver'))"
 $icon = (Resolve-Path "icon.ico").Path
-python -m PyInstaller --onefile --windowed --name BaiakIdleBot --icon $icon --add-data "$driver;playwright\driver" --hidden-import sqlite3 --hidden-import pystray --hidden-import pystray._win32 --distpath dist_fix --workpath build_fix --specpath spec_fix gui.py --noconfirm
+python -m PyInstaller --onefile --windowed --name BaiakIdleBot --icon $icon --add-data "$driver;playwright\driver" --hidden-import sqlite3 --hidden-import pystray --hidden-import pystray._win32 --runtime-tmpdir "%LOCALAPPDATA%\BaiakIdleBot\runtime" --distpath dist_fix --workpath build_fix --specpath spec_fix gui.py --noconfirm
 ```
-(inclua os `--hidden-import` novos do passo 2).
+(inclua os `--hidden-import` novos do passo 2). `--runtime-tmpdir` (desde a v4.22.2): o .exe se extrai em
+`%LOCALAPPDATA%\BaiakIdleBot\runtime` em vez do `%TEMP%` - limpezas de temporarios (Windows/antivirus)
+apagavam o driver do Playwright com o bot aberto e toda reconexao falhava. Mantenha essa opcao.
 
 ## 6. Zip do Windows (nome EXATO: `BaiakIdleBot-windows.zip`)
 Mesmo conteúdo do `make_share_zip.py` (exe + icon + routines/settings PADRÃO + `market/`
