@@ -7,6 +7,7 @@ build/
 # seus dados de jogo/dados sensiveis
 chrome_profile/
 opera_profile/
+brave_profile/
 logs/
 routines.json
 routines_opera.json
@@ -16,6 +17,8 @@ settings_opera.json
 settings_idledeck.json
 routines_idledeck_vpn.json
 settings_idledeck_vpn.json
+routines_brave.json
+settings_brave.json
 *.state.json
 
 # painel de mercado - o CODIGO agora vai junto no build compartilhado (roda

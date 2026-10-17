@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.23.0"
+VERSION = "4.24.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -36,6 +36,17 @@ BROWSER_PROFILES = {
         "profile_dir_name": "opera_profile",
         "routines_filename": "routines_opera.json",
         "settings_filename": "settings_opera.json",
+    },
+    # Brave: mesmo motor do Chrome, bloqueia anuncios (menos memoria) e - sem as
+    # flags anti-economia (ver launch_browser) - deixa a aba de TRAS (ex: outro
+    # jogo) economizar CPU enquanto o Baiak fica na aba da frente.
+    "brave": {
+        "label": "Brave",
+        "cdp_port": 9226,
+        "profile_dir_name": "brave_profile",
+        "routines_filename": "routines_brave.json",
+        "settings_filename": "settings_brave.json",
+        "background_economy": True,
     },
     # IdleDeck: o jogo roda num "slot" do app (Electron), nao num navegador
     # nosso - 'launcher' faz o launch_browser abrir o app com a porta de
@@ -631,6 +642,20 @@ def find_browser_executable(profile=None):
             ]
         else:
             candidates = ["/usr/bin/opera", "/usr/bin/opera-gx"]
+    elif profile == "brave":
+        if system == "Windows":
+            candidates = [
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+                os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ]
+        elif system == "Darwin":
+            candidates = [
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                os.path.expanduser("~/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            ]
+        else:
+            candidates = ["/usr/bin/brave-browser", "/usr/bin/brave"]
     else:
         if system == "Windows":
             candidates = [
@@ -923,23 +948,26 @@ def launch_browser(log=print):
     os.makedirs(target_dir, exist_ok=True)
     mark_chrome_profile_clean(target_dir)
     log(f"Abrindo o {label} ({browser_path})...")
-    subprocess.Popen(
-        [
-            browser_path,
-            f"--remote-debugging-port={cdp_port()}",
-            f"--user-data-dir={target_dir}",
-            "--start-maximized",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-session-crashed-bubble",
-            # o jogo segue no ritmo normal com a janela escondida/minimizada/coberta
-            # (sem isso o navegador "economiza" timers e renderizacao em 2o plano)
+    args = [
+        browser_path,
+        f"--remote-debugging-port={cdp_port()}",
+        f"--user-data-dir={target_dir}",
+        "--start-maximized",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-session-crashed-bubble",
+    ]
+    if not BROWSER_PROFILES[CURRENT_PROFILE].get("background_economy"):
+        # o jogo segue no ritmo normal com a janela escondida/minimizada/coberta
+        # (sem isso o navegador "economiza" timers e renderizacao em 2o plano).
+        # Perfis com 'background_economy' (Brave) ficam sem: a aba de tras
+        # economiza CPU - o Baiak precisa estar na aba da frente.
+        args += [
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
-            GAME_URL,
         ]
-    )
+    subprocess.Popen(args + [GAME_URL])
 
     deadline = time.monotonic() + BROWSER_LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -6381,6 +6409,35 @@ def is_connection_dead_error(error):
     return any(sig in text for sig in _CONNECTION_DEAD_SIGNATURES)
 
 
+def leave_site_home(page, log):
+    """Quando o jogo atualiza, a aba as vezes cai na pagina inicial do SITE
+    (baiakidle.com/, 'JOGAR AGORA', 'Minha conta'...) em vez do jogo
+    (/jogar/) - e todas as rotinas falham ate alguem clicar em 'JOGAR AGORA'.
+    Clica nele (ou abre /jogar/ direto) e espera o jogo carregar; o 'Bem-vindo
+    de volta' que aparece depois e' fechado ('Coletar') no proximo tick.
+    True se estava fora do jogo."""
+    try:
+        if "/jogar" in (page.url or ""):
+            return False
+        log("  A aba estava na pagina inicial do site - clicando em 'JOGAR AGORA'...")
+        # ha mais de um link pra /jogar/ (o 'JOGAR' do menu fica escondido em
+        # alguns layouts) - so o visivel ('JOGAR AGORA'); sem ele, abre direto.
+        link = page.locator('a[href="/jogar/"]:visible').first
+        try:
+            link.click(timeout=UI_CLICK_TIMEOUT_MS)
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            page.goto(GAME_URL, wait_until="load", timeout=60000)
+        page.wait_for_url("**/jogar/**", timeout=30000)
+        wait_game_ready(page, log)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        log(f"  Erro ao voltar pro jogo pela pagina inicial: {error}")
+    return True
+
+
 def dismiss_blocking_overlays(page, log):
     """Fecha telas que travam o jogo INTEIRO se aparecerem - sem isso o bot
     para de vender/separar loot e seguir as rotinas ate alguem fechar na mao
@@ -6416,6 +6473,9 @@ def dismiss_blocking_overlays(page, log):
     Retorna True se algum desses overlays estava visivel agora - quem chama
     deve pular o resto do tick nesse caso (a pagina pode estar recarregando
     ou o modal pode ter coberto os elementos que uma rotina tentaria usar)."""
+    if leave_site_home(page, log):
+        return True
+
     try:
         changelog_close = page.query_selector("#changelog-modal-close")
         if changelog_close is not None and changelog_close.is_visible():

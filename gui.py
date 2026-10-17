@@ -187,7 +187,7 @@ class BotGUI:
             header,
             text="+",
             width=28,
-            command=self.open_new_window,
+            command=lambda: self.choose_new_window_profile(new_window_button),
             fg_color=theme.PANEL_ALT,
             hover_color=theme.BORDER,
             text_color=theme.TEXT,
@@ -196,9 +196,9 @@ class BotGUI:
         new_window_button.pack(side="left", padx=(6, 0))
         _Tooltip(
             new_window_button,
-            "Abre uma outra janela do bot, ja no outro navegador\n"
-            "(Chrome/Opera) - pra rodar os dois ao mesmo tempo,\n"
-            "cada um com seu proprio Play/Pause/Stop.",
+            "Abre uma outra janela do bot no navegador que voce\n"
+            "escolher (Chrome, Opera, Brave, IdleDeck...) - pra rodar\n"
+            "mais de um ao mesmo tempo, cada um com seu Play/Pause/Stop.",
         )
 
         self.status_label = ctk.CTkLabel(
@@ -395,19 +395,31 @@ class BotGUI:
         try:
             if bot.set_browser_hidden(hide, self.log):
                 self.log("Navegador escondido - o bot continua jogando normal." if hide else "Navegador de volta na tela.")
+                if hide and bot.BROWSER_PROFILES[self.current_profile].get("background_economy"):
+                    self.log("  Atencao: neste navegador o jogo escondido pode ficar mais lento (economia em 2o plano ligada).")
         except Exception as error:
             self.log(f"Erro ao {'esconder' if hide else 'mostrar'} o navegador: {error}")
         self.browser_button.configure(text="Mostrar navegador" if bot.browser_hidden() else "Esconder navegador")
 
-    def open_new_window(self):
+    def choose_new_window_profile(self, anchor):
+        """'+': mostra um menu com os navegadores (menos o desta janela) pra
+        escolher em qual abrir a nova janela - antes pulava pro 'proximo' da
+        lista e era preciso ir clicando ate chegar no desejado."""
+        menu = tk.Menu(self.root, tearoff=0)
+        for key, profile in bot.BROWSER_PROFILES.items():
+            if key != self.current_profile:
+                menu.add_command(label=profile["label"], command=lambda k=key: self.open_new_window(k))
+        try:
+            menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def open_new_window(self, other_profile):
         """Abre uma 2a instancia do bot (processo novo, independente) ja no
-        OUTRO navegador. Uma janela so consegue rodar automacao pra UM
+        navegador escolhido. Uma janela so consegue rodar automacao pra UM
         navegador por vez (o bot.py guarda o estado da automacao em
-        variaveis globais do processo) - pra Chrome e Opera rodarem ao mesmo
+        variaveis globais do processo) - pra dois rodarem ao mesmo
         tempo, cada Play/Pause/Stop precisa ser de um processo separado."""
-        # com 3+ perfis, vai pro PROXIMO na ordem (Chrome -> Opera -> IdleDeck -> Chrome)
-        keys = list(bot.BROWSER_PROFILES)
-        other_profile = keys[(keys.index(self.current_profile) + 1) % len(keys)]
         if getattr(sys, "frozen", False):
             args = [sys.executable, "--profile", other_profile]
         else:
