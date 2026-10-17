@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.22.2"
+VERSION = "4.23.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -88,6 +88,11 @@ REPEAT_CLICK_DELAY_SECONDS = 0.5  # folga entre cliques repetidos (passos "repet
 MAX_REPEAT_CLICKS = 20  # limite de seguranca (quantidade) para passos "repetir enquanto aparecer"
 MAX_REPEAT_SECONDS = 15  # limite de seguranca (tempo) para passos "repetir enquanto aparecer"
 
+# Prazo dos cliques/preenchimentos na tela do jogo. Era 2-3s; depois da
+# atualizacao de 17/10 a hunt roda a ~2-9 quadros/s e o Playwright espera
+# alguns quadros com o elemento parado antes de clicar - um clique normal
+# passou a levar 1,5-3s+ e estourava o prazo (cliques "perdidos" em menus).
+UI_CLICK_TIMEOUT_MS = 10000
 TICK_SECONDS = 1  # granularidade do loop principal / cadencia do gatilho "automatico"
 RESTART_DELAY_SECONDS = 10  # espera antes de tentar reconectar apos perder a conexao com o navegador
 HUNT_CHECK_INTERVAL_SECONDS = 30  # de quanto em quanto tempo 'ensure_active_hunt' confere se ha hunt ativa
@@ -1645,7 +1650,7 @@ def execute_dom_click_step(page, step, stop_event, log):
     selector = step["selector"]
     label = step.get("label", selector)
     confirm_selector = step.get("confirm_selector")
-    timeout_ms = step.get("timeout", DEFAULT_STEP_TIMEOUT_SECONDS) * 1000
+    timeout_ms = max(step.get("timeout", DEFAULT_STEP_TIMEOUT_SECONDS) * 1000, UI_CLICK_TIMEOUT_MS)
     # 'force': ignora a checagem de 'estavel' do Playwright (util pra botoes com
     # animacao de destaque - ex: brilho no item pronto pra entregar - que nunca
     # param de se mexer visualmente, mas continuam clicaveis de verdade).
@@ -1711,9 +1716,23 @@ def execute_dom_click_step(page, step, stop_event, log):
 
     try:
         page.click(selector, timeout=timeout_ms, force=force)
-    except Exception:
-        log(f"'{label}' nao encontrado.")
-        return False
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        # intermitente desde a atualizacao de 17/10 ('Progressao' nao encontrado
+        # com a aba la): a aba as vezes esta animando e o Playwright espera ela
+        # 'parar' ate estourar o prazo - tenta de novo forcando, se ela existir.
+        try:
+            if page.query_selector(selector) is None:
+                raise error
+            time.sleep(1)
+            page.click(selector, timeout=timeout_ms, force=True)
+        except Exception as retry_error:
+            if is_connection_dead_error(retry_error):
+                raise
+            reason = str(retry_error).splitlines()[0][:120]
+            log(f"'{label}' nao encontrado ({reason}).")
+            return False
     log(f"'{label}' clicado.")
     LAST_ACTION_MEMORY[label] = time.time()
     click_confirm()
@@ -1740,7 +1759,7 @@ def execute_dom_ensure_checked_step(page, step, log):
         # <label> pai - ai clica no proprio input, igual antes).
         target_handle = checkbox.evaluate_handle("el => el.closest('label') || el")
         clickable = target_handle.as_element() or checkbox
-        clickable.click(timeout=3000)
+        clickable.click(timeout=UI_CLICK_TIMEOUT_MS)
         log(f"  '{label}' marcada.")
     except Exception as error:
         log(f"  Erro ao marcar '{label}': {error}")
@@ -1763,7 +1782,7 @@ def execute_dom_ensure_active_step(page, step, log):
         current_class = el.get_attribute("class") or ""
         if active_class in current_class.split():
             return True
-        el.click(timeout=3000)
+        el.click(timeout=UI_CLICK_TIMEOUT_MS)
         log(f"  '{label}' ativado.")
     except Exception as error:
         log(f"  Erro ao ativar '{label}': {error}")
@@ -1787,7 +1806,7 @@ def execute_dom_ensure_select_step(page, step, log):
             return False
         if el.input_value() == value:
             return True
-        el.select_option(value, timeout=3000)
+        el.select_option(value, timeout=UI_CLICK_TIMEOUT_MS)
         log(f"  '{label}' ajustado.")
     except Exception as error:
         log(f"  Erro ao ajustar '{label}': {error}")
@@ -1822,7 +1841,7 @@ def execute_dom_clear_search_step(page, step, log):
     try:
         field = page.query_selector(selector)
         if field is not None and (field.input_value() or ""):
-            field.fill("", timeout=3000)
+            field.fill("", timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(200)
     except Exception:
         pass
@@ -1866,7 +1885,7 @@ def execute_dom_favorite_hunt_step(page, step, log):
     ac_selector = step.get("ac_selector", ".cx-ac")
 
     try:
-        page.click(category_selector, timeout=3000)
+        page.click(category_selector, timeout=UI_CLICK_TIMEOUT_MS)
     except Exception as error:
         log(f"  Erro ao abrir Hunts no Codex: {error}")
         return False
@@ -1874,7 +1893,7 @@ def execute_dom_favorite_hunt_step(page, step, log):
     previous_hunt = FAVORITE_MEMORY.get("last_hunt")
     if previous_hunt and previous_hunt != hunt_name:
         try:
-            page.fill(search_selector, previous_hunt, timeout=3000)
+            page.fill(search_selector, previous_hunt, timeout=UI_CLICK_TIMEOUT_MS)
             time.sleep(0.4)
             cleared = 0
             for entry in page.query_selector_all(entry_selector):
@@ -1884,18 +1903,18 @@ def execute_dom_favorite_hunt_step(page, step, log):
                     continue
                 star = entry.query_selector(star_selector)
                 if star is not None and star.get_attribute("aria-pressed") == "true":
-                    star.click(timeout=2000)
+                    star.click(timeout=UI_CLICK_TIMEOUT_MS)
                     cleared += 1
                 ac = entry.query_selector(ac_selector)
                 if ac is not None and ac.get_attribute("aria-pressed") == "true":
-                    ac.click(timeout=2000)
+                    ac.click(timeout=UI_CLICK_TIMEOUT_MS)
             if cleared:
                 log(f"  {cleared} entrada(s) de '{previous_hunt}' desfavoritada(s)/tiradas do Auto Collect (trocou de hunt).")
         except Exception as error:
             log(f"  Erro ao limpar favoritos antigos de '{previous_hunt}': {error}")
 
     try:
-        page.fill(search_selector, hunt_name, timeout=3000)
+        page.fill(search_selector, hunt_name, timeout=UI_CLICK_TIMEOUT_MS)
         time.sleep(0.4)
     except Exception as error:
         log(f"  Erro ao buscar '{hunt_name}' no Codex: {error}")
@@ -1918,10 +1937,10 @@ def execute_dom_favorite_hunt_step(page, step, log):
             found_level_one = True
         try:
             if level_one and not is_starred:
-                star.click(timeout=2000)
+                star.click(timeout=UI_CLICK_TIMEOUT_MS)
                 favorited += 1
             elif not level_one and is_starred:
-                star.click(timeout=2000)
+                star.click(timeout=UI_CLICK_TIMEOUT_MS)
                 unfavorited += 1
         except Exception as error:
             log(f"  Erro ao (des)favoritar entrada de '{hunt_name}': {error}")
@@ -1931,9 +1950,9 @@ def execute_dom_favorite_hunt_step(page, step, log):
             is_ac = ac.get_attribute("aria-pressed") == "true"
             try:
                 if level_one and not is_ac:
-                    ac.click(timeout=2000)
+                    ac.click(timeout=UI_CLICK_TIMEOUT_MS)
                 elif not level_one and is_ac:
-                    ac.click(timeout=2000)
+                    ac.click(timeout=UI_CLICK_TIMEOUT_MS)
             except Exception as error:
                 log(f"  Erro ao ajustar Auto Collect de '{hunt_name}': {error}")
 
@@ -1953,7 +1972,7 @@ def execute_dom_favorite_hunt_step(page, step, log):
         COMPLETION_MEMORY["notified_hunt"] = hunt_name
 
     try:
-        page.fill(search_selector, "", timeout=3000)
+        page.fill(search_selector, "", timeout=UI_CLICK_TIMEOUT_MS)
     except Exception:
         pass
 
@@ -2156,8 +2175,8 @@ def open_codex(page):
         # na hora e com motivo claro; 'dismiss_blocking_overlays' fecha esse
         # modal depois de AUCTION_MODAL_GRACE_SECONDS e quem chamou tenta de novo.
         raise RuntimeError("o Mercado/leilao do jogo esta aberto")
-    page.click("#tab-progressao", timeout=3000)
-    page.click("#tab-codex", timeout=3000)
+    page.click("#tab-progressao", timeout=UI_CLICK_TIMEOUT_MS)
+    page.click("#tab-codex", timeout=UI_CLICK_TIMEOUT_MS)
     page.wait_for_selector(".codex-side", timeout=4000)
     page.wait_for_timeout(500)
     return True
@@ -2177,7 +2196,7 @@ def read_codex_completed_count(page):
     finally:
         if opened_here:
             try:
-                page.click("#codex-modal-close", timeout=2000)
+                page.click("#codex-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
             except Exception:
                 pass
     match = re.match(r"\s*(\d+)", text)
@@ -2195,14 +2214,14 @@ def codex_hunts_view(page, log):
     unchecked = []
     previous_attr = ""
     try:
-        page.click('.codex-side .codex-tab:has-text("Hunts")', timeout=3000)
+        page.click('.codex-side .codex-tab:has-text("Hunts")', timeout=UI_CLICK_TIMEOUT_MS)
         search = page.query_selector(".cx-search")
         if search is not None and (search.input_value() or ""):
-            search.fill("", timeout=3000)
+            search.fill("", timeout=UI_CLICK_TIMEOUT_MS)
         for label in CODEX_FILTER_LABELS:
             checkbox = page.locator(f'label.cx-check:has-text("{label}") input[type="checkbox"]')
             if checkbox.count() and checkbox.first.is_checked():
-                page.locator(f'label.cx-check:has-text("{label}")').first.click(timeout=3000)
+                page.locator(f'label.cx-check:has-text("{label}")').first.click(timeout=UI_CLICK_TIMEOUT_MS)
                 unchecked.append(label)
         attr_el = page.query_selector(".cx-attr")
         previous_attr = attr_el.input_value() if attr_el else ""
@@ -2212,15 +2231,15 @@ def codex_hunts_view(page, log):
         try:
             attr_el = page.query_selector(".cx-attr")
             if attr_el is not None and attr_el.input_value() != previous_attr:
-                attr_el.select_option(previous_attr, timeout=3000)
+                attr_el.select_option(previous_attr, timeout=UI_CLICK_TIMEOUT_MS)
             search = page.query_selector(".cx-search")
             if search is not None and (search.input_value() or ""):
-                search.fill("", timeout=3000)
+                search.fill("", timeout=UI_CLICK_TIMEOUT_MS)
             for label in unchecked:
                 checkbox = page.locator(f'label.cx-check:has-text("{label}") input[type="checkbox"]')
                 if checkbox.count() and not checkbox.first.is_checked():
-                    page.locator(f'label.cx-check:has-text("{label}")').first.click(timeout=3000)
-            page.click("#codex-modal-close", timeout=2000)
+                    page.locator(f'label.cx-check:has-text("{label}")').first.click(timeout=UI_CLICK_TIMEOUT_MS)
+            page.click("#codex-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
         except Exception as error:
             log(f"  Aviso: nao consegui devolver o Codex ao estado de antes: {error}")
 
@@ -2229,7 +2248,7 @@ def read_codex_hunt_entries(page, attr=""):
     """Dentro de 'codex_hunts_view': filtra pelo atributo ('' = todos) e le as
     entradas de TODAS as paginas (o jogo mostra 30 por pagina; com atributo
     escolhido geralmente cabe em 1). Volta pra 1a pagina no fim."""
-    page.select_option(".cx-attr", attr, timeout=3000)
+    page.select_option(".cx-attr", attr, timeout=UI_CLICK_TIMEOUT_MS)
     page.wait_for_timeout(700)
     entries, seen = [], set()
     for _ in range(40):
@@ -2352,7 +2371,7 @@ def build_progress_entry(raw, cat):
 
 def read_codex_tab_progress(page, cat):
     """Aba ja aberta e com os filtros desligados: le todas as paginas."""
-    page.select_option(".cx-attr", "", timeout=3000)
+    page.select_option(".cx-attr", "", timeout=UI_CLICK_TIMEOUT_MS)
     page.wait_for_timeout(700)
     entries, seen = [], set()
     for _ in range(40):
@@ -2378,10 +2397,10 @@ def read_codex_progress(page, log):
     with codex_hunts_view(page, log):
         for label, cat in CODEX_PROGRESS_TABS:
             if label != "Hunts":
-                page.click(f'.codex-side .codex-tab:has-text("{label}")', timeout=3000)
+                page.click(f'.codex-side .codex-tab:has-text("{label}")', timeout=UI_CLICK_TIMEOUT_MS)
                 search = page.query_selector(".cx-search")
                 if search is not None and (search.input_value() or ""):
-                    search.fill("", timeout=3000)
+                    search.fill("", timeout=UI_CLICK_TIMEOUT_MS)
                 page.wait_for_timeout(500)
             entries.extend(read_codex_tab_progress(page, cat))
     opened = sum(1 for e in entries if e["status"] == "open")
@@ -2441,19 +2460,19 @@ def codex_prerequisite_done(page, entry):
     Dentro de 'codex_hunts_view'."""
     if entry["level"] <= 1:
         return True
-    page.select_option(".cx-attr", "", timeout=3000)
+    page.select_option(".cx-attr", "", timeout=UI_CLICK_TIMEOUT_MS)
     search = page.query_selector(".cx-search")
     if search is None:
         return False
     try:
-        search.fill(entry["base"], timeout=3000)
+        search.fill(entry["base"], timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(800)
         previous = [
             e for e in (build_codex_entry(raw) for raw in page.evaluate(CODEX_ENTRIES_JS))
             if e["base"].lower() == entry["base"].lower() and e["level"] == entry["level"] - 1
         ]
     finally:
-        search.fill("", timeout=3000)
+        search.fill("", timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(300)
     return bool(previous) and previous[0]["status"] == "done"
 
@@ -2475,7 +2494,7 @@ def try_unlock_codex_entry(page, queue_item, entry, log):
         log(f"  '{name}': o nivel anterior ainda nao foi concluido - nao desbloqueio ainda.")
         return False
 
-    page.select_option(".cx-attr", queue_item.get("attr", ""), timeout=3000)
+    page.select_option(".cx-attr", queue_item.get("attr", ""), timeout=UI_CLICK_TIMEOUT_MS)
     page.wait_for_timeout(700)
     index = page.evaluate(
         """(wanted) => Array.from(document.querySelectorAll('.cx-list .cx-entry')).findIndex(
@@ -2493,7 +2512,7 @@ def try_unlock_codex_entry(page, queue_item, entry, log):
         return False
 
     log(f"  Desbloqueando '{name}' ({format_gold(cost)} de gold)...")
-    button.click(timeout=3000)
+    button.click(timeout=UI_CLICK_TIMEOUT_MS)
     try:
         confirm = page.wait_for_selector("#confirm-yes", timeout=3000, state="visible")
     except Exception:
@@ -2515,11 +2534,11 @@ def try_unlock_codex_entry(page, queue_item, entry, log):
     ):
         log(f"  BLOQUEADO por seguranca: a confirmacao nao e' a esperada ('{confirm_text}' / '{body_text[:120]}') - cancelando.")
         try:
-            page.click("#confirm-no", timeout=2000)
+            page.click("#confirm-no", timeout=UI_CLICK_TIMEOUT_MS)
         except Exception:
             page.keyboard.press("Escape")
         return False
-    confirm.click(timeout=3000)
+    confirm.click(timeout=UI_CLICK_TIMEOUT_MS)
     page.wait_for_timeout(1200)
 
     refreshed = next(
@@ -2591,7 +2610,7 @@ def finish_campaign_queue(page, queue, log):
     LAST_KNOWN_HUNT_MEMORY["name"] = None
     try:
         click_open_wave(page, "#wave-title")
-        page.click('.tp-opt[data-tp="exercise"]', timeout=3000)
+        page.click('.tp-opt[data-tp="exercise"]', timeout=UI_CLICK_TIMEOUT_MS)
         log("  'Treino online' clicado.")
     except Exception as error:
         log(f"  Erro ao ir pro treino online: {error}")
@@ -2779,20 +2798,20 @@ def open_merchant_potions(page):
             if page.is_visible("#tab-merchant"):
                 break
             if attempt % 2 == 0:
-                page.hover("#tab-comercio", timeout=3000)
+                page.hover("#tab-comercio", timeout=UI_CLICK_TIMEOUT_MS)
             else:
-                page.click("#tab-comercio", timeout=3000)
+                page.click("#tab-comercio", timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(700)
-        page.click("#tab-merchant", timeout=3000)
+        page.click("#tab-merchant", timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(".merchant-card .store-sidebtn", timeout=5000)
         page.wait_for_timeout(700)
     back = page.locator('.merchant-card button:has-text("Voltar")')
     if back.count() and back.first.is_visible():  # estava no Historico
-        back.first.click(timeout=3000)
+        back.first.click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(600)
     side = page.locator('.merchant-card .store-sidebtn:has-text("Poções")').first
     if "on" not in (side.get_attribute("class") or "").split():
-        side.click(timeout=3000)
+        side.click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(700)
     page.wait_for_selector(".merchant-card .gs-row", timeout=4000)
 
@@ -2802,10 +2821,10 @@ def close_merchant(page):
     for _ in range(3):
         try:
             if page.is_visible(".gs-cartlayer"):
-                page.locator(".gs-cartwin-close").first.click(timeout=2000)
+                page.locator(".gs-cartwin-close").first.click(timeout=UI_CLICK_TIMEOUT_MS)
                 page.wait_for_timeout(300)
             if page.is_visible(".merchant-card"):
-                page.click("#merchant-modal-close", timeout=3000)
+                page.click("#merchant-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
                 page.wait_for_timeout(400)
         except Exception:
             page.keyboard.press("Escape")
@@ -2824,9 +2843,9 @@ def clear_merchant_cart(page, log):
         return 0
     badge = page.evaluate("() => ((document.querySelector('.gs-cartfab-badge') || {}).textContent || '')")
     count = int(re.sub(r"\D", "", badge) or 0)
-    fab.first.click(timeout=3000)
+    fab.first.click(timeout=UI_CLICK_TIMEOUT_MS)
     page.wait_for_timeout(600)
-    page.locator(".gs-cart-clear").first.click(timeout=3000)
+    page.locator(".gs-cart-clear").first.click(timeout=UI_CLICK_TIMEOUT_MS)
     page.wait_for_timeout(500)
     try:
         page.locator(".gs-cartwin-close").first.click(timeout=1000)
@@ -2920,9 +2939,9 @@ def buy_potions_now(page, names, log):
 
         for potion in to_buy:
             row = page.locator(f'.merchant-card .gs-row:has(.gs-name:text-is("{potion["name"]}"))').first
-            row.locator(".gs-buy").click(timeout=3000)
+            row.locator(".gs-buy").click(timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(400)
-        page.locator(".gs-cartfab").first.click(timeout=3000)
+        page.locator(".gs-cartfab").first.click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(700)
         cart = page.evaluate(
             r"""() => ({
@@ -2941,12 +2960,12 @@ def buy_potions_now(page, names, log):
             or cart_total != total
         ):
             log(f"  O carrinho nao confere com o pedido ({cart}) - limpando sem comprar.")
-            page.locator(".gs-cart-clear").first.click(timeout=3000)
+            page.locator(".gs-cart-clear").first.click(timeout=UI_CLICK_TIMEOUT_MS)
             result["failed"].extend(expected)
             return result
 
         log(f"  Comprando {len(to_buy)} pocao(oes) por {format_gold(total)}: {', '.join(sorted(expected))}...")
-        page.locator(".gs-cart-confirm").first.click(timeout=3000)
+        page.locator(".gs-cart-confirm").first.click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(1500)
         try:  # o carrinho costuma fechar sozinho depois de confirmar
             page.locator(".gs-cartwin-close").first.click(timeout=1000)
@@ -2978,12 +2997,12 @@ def collect_potions_from_inbox(page, log):
             page.keyboard.press("Escape")
             page.keyboard.press("Escape")
             page.wait_for_timeout(300)
-        page.click("#tab-chest", timeout=3000)
+        page.click("#tab-chest", timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(".chest-grid", timeout=5000)
         page.wait_for_timeout(700)
     inbox = page.locator('.chest-side .store-sidebtn:has-text("Caixa de entrada")').first
     if inbox.count() and "on" not in (inbox.get_attribute("class") or "").split():
-        inbox.click(timeout=3000)
+        inbox.click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(700)
     collected = 0
     try:
@@ -2997,7 +3016,7 @@ def collect_potions_from_inbox(page, log):
             cells = page.query_selector_all(".chest-grid:not(.chest-bag) .chest-cell.filled")
             if index >= len(cells):
                 break
-            cells[index].click(timeout=3000)
+            cells[index].click(timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(600)
             collected += 1
     finally:
@@ -3038,7 +3057,7 @@ def use_potion(page, name, quantity, log):
         cells = page.query_selector_all("#backpack-grid .cell.buffpot")
         if index >= len(cells):
             break
-        cells[index].click(timeout=3000)
+        cells[index].click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_timeout(500)
         used += 1
     if used:
@@ -3247,7 +3266,7 @@ def execute_dom_tier_sort_step(page, step, stop_event, log):
 
         log(f"  Movendo item ({reason}) para o backpack...")
         try:
-            target.click(modifiers=["Shift"], timeout=3000)
+            target.click(modifiers=["Shift"], timeout=UI_CLICK_TIMEOUT_MS)
         except Exception as error:
             log(f"  Item sumiu antes do clique, tentando o proximo ({error}).")
             continue
@@ -3303,7 +3322,7 @@ def execute_dom_threshold_click_step(page, step, log):
 
     try:
         click_open_wave(page, open_selector)
-        page.click(option_selector, timeout=3000)
+        page.click(option_selector, timeout=UI_CLICK_TIMEOUT_MS)
         log(f"  '{label}' clicado.")
     except Exception as error:
         log(f"  Erro ao clicar '{label}': {error}")
@@ -3345,7 +3364,7 @@ def clear_hunt_search(page):
     try:
         search_el = page.query_selector(".pick-search")
         if search_el is not None and (search_el.input_value() or ""):
-            search_el.fill("", timeout=3000)
+            search_el.fill("", timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(200)
     except Exception:
         pass  # campo de busca pode nao existir em todo lugar - nao trava por isso
@@ -3353,7 +3372,7 @@ def clear_hunt_search(page):
     try:
         active_cat = page.query_selector(".sp-cat.on")
         if active_cat is not None and "Todas" not in (active_cat.text_content() or ""):
-            page.click('.sp-cat:has-text("Todas")', timeout=2000)
+            page.click('.sp-cat:has-text("Todas")', timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(200)
     except Exception:
         pass  # filtro de categoria pode nao existir em todo lugar - nao trava por isso
@@ -3368,7 +3387,7 @@ def find_and_go_to_hunt(page, hunt_name, open_selector, hunts_selector, row_sele
     (vai pra hunt certa de uma task aceita)."""
     try:
         click_open_wave(page, open_selector)
-        page.click(hunts_selector, timeout=3000)
+        page.click(hunts_selector, timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
     except Exception as error:
@@ -3399,26 +3418,36 @@ def find_and_go_to_hunt(page, hunt_name, open_selector, hunts_selector, row_sele
         return False
 
     try:
-        go_button = target_row.query_selector(go_selector)
-        if go_button is None or not go_button.is_visible():
-            # a linha pode precisar ser expandida (clicada) antes do botao 'Cacar' aparecer.
-            target_row.click(timeout=3000)
-            time.sleep(0.3)
-            go_button = target_row.query_selector(go_selector)
-        if go_button is None:
-            log(f"  Botao 'Cacar' nao encontrado na fase '{hunt_name}'.")
-            return False
-        if not go_button.is_enabled():
-            # desabilitado normalmente significa que essa ja e a fase ativa agora.
+        result = click_hunt_go(page, hunt_name, row_selector, name_selector, go_selector)
+        if result == "active":
             log(f"  'Cacar' desabilitado para '{hunt_name}' - provavelmente ja e a fase ativa.")
             return True
-        go_button.click(timeout=5000)
         log(f"  'Cacar' clicado em '{hunt_name}'.")
     except Exception as error:
         log(f"  Erro ao clicar 'Cacar': {error}")
         return False
-
     return True
+
+
+def click_hunt_go(page, hunt_name, row_selector, name_selector, go_selector):
+    """Com a lista de Hunts aberta: seleciona o cartao da hunt e clica em
+    'Caçar'. Desde a atualizacao de 17/10 a lista e uma grade de cartoes com
+    rolagem propria: o 'Caçar' so aparece com o cartao selecionado ('expanded')
+    e a grade se redesenha sozinha toda hora (marcas de Codex/Bestiary ao vivo) -
+    uma referencia guardada ao cartao ficava presa num no ja trocado e o clique
+    esperava pra sempre. Locators re-acham o cartao a cada passo. Retorna
+    'clicked', ou 'active' se o botao esta desabilitado (ja e a hunt ativa)."""
+    safe_name = hunt_name.strip().replace('"', '\\"')
+    row = page.locator(f'{row_selector}:has({name_selector}:text-is("{safe_name}"))').first
+    go_button = row.locator(go_selector).first
+    if not go_button.is_visible():
+        row.scroll_into_view_if_needed(timeout=3000)
+        row.click(timeout=UI_CLICK_TIMEOUT_MS)
+        go_button.wait_for(state="visible", timeout=4000)
+    if not go_button.is_enabled():
+        return "active"
+    go_button.click(timeout=UI_CLICK_TIMEOUT_MS)
+    return "clicked"
 
 
 def match_hunt_by_monsters(page, monster_names, row_selector, name_selector, mobs_selector):
@@ -3525,10 +3554,10 @@ def read_bosstiary_kills(page, log):
     leitura separada e uma ida-e-volta pelo protocolo de depuracao; somadas,
     isso segurava essa tela aberta por vários segundos so pra ler o placar)."""
     try:
-        page.click("#tab-cyclopedia", timeout=3000)
+        page.click("#tab-cyclopedia", timeout=UI_CLICK_TIMEOUT_MS)
         tab_class = page.eval_on_selector('.cyc-tabbtn[data-tab="bosstiary"]', "el => el.className") or ""
         if "on" not in tab_class.split():
-            page.click('.cyc-tabbtn[data-tab="bosstiary"]', timeout=3000)
+            page.click('.cyc-tabbtn[data-tab="bosstiary"]', timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(".cyc-bosscell", timeout=4000)
     except Exception as error:
         log(f"  Erro ao abrir Cyclopedia/Bosstiary: {error}")
@@ -3546,7 +3575,7 @@ def read_bosstiary_kills(page, log):
             BOSS_KILLS_MEMORY[cell["name"]] = int(match.group(1).replace(".", ""))
 
     try:
-        page.click("#cyclopedia-modal-close", timeout=3000)
+        page.click("#cyclopedia-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
     except Exception:
         page.keyboard.press("Escape")
 
@@ -3616,12 +3645,12 @@ def open_boss_slots(page):
     """Abre Cyclopedia > Boss Slots. True se os slots apareceram."""
     try:
         try:
-            page.click("#tab-cyclopedia", timeout=3000)
+            page.click("#tab-cyclopedia", timeout=UI_CLICK_TIMEOUT_MS)
         except Exception:
-            page.click("#tab-cyclopedia", timeout=3000, force=True)
+            page.click("#tab-cyclopedia", timeout=UI_CLICK_TIMEOUT_MS, force=True)
         tab_class = page.eval_on_selector('.cyc-tabbtn[data-tab="bossslots"]', "el => el.className") or ""
         if "on" not in tab_class.split():
-            page.click('.cyc-tabbtn[data-tab="bossslots"]', timeout=3000)
+            page.click('.cyc-tabbtn[data-tab="bossslots"]', timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(".bs-panel .bs-slot", timeout=4000)
         return True
     except Exception as error:
@@ -3632,7 +3661,7 @@ def open_boss_slots(page):
 
 def close_cyclopedia(page):
     try:
-        page.click("#cyclopedia-modal-close", timeout=3000)
+        page.click("#cyclopedia-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -3647,7 +3676,7 @@ def pick_boss_slot(page, index, name):
     pick = slot.locator(f'.bs-pick:has(.cyc-cell-name:text-is("{safe_name}"))')
     if pick.count() == 0:
         return False
-    pick.first.click(timeout=3000)
+    pick.first.click(timeout=UI_CLICK_TIMEOUT_MS)
     for _ in range(10):
         time.sleep(0.2)
         _, slots = read_boss_slots(page)
@@ -3691,7 +3720,7 @@ def ensure_boss_slots(page, wanted, log):
                     log(f"  Boss Slots: trocar custa {gold_text(cost)} gold (gasto hoje {gold_text(spent)}) - sem gold ou acima do teto, segue sem trocar.")
                     break
                 removed = slots[index]["name"]
-                page.locator(".bs-panel .bs-slot").nth(index).locator("button.bs-btn").first.click(timeout=3000)
+                page.locator(".bs-panel .bs-slot").nth(index).locator("button.bs-btn").first.click(timeout=UI_CLICK_TIMEOUT_MS)
                 page.locator(".bs-panel .bs-slot").nth(index).locator(".bs-picklist").wait_for(timeout=3000)
                 add_boss_slots_spent(cost)
                 log(f"  Boss Slot {index + 1}: '{removed}' removido ({gold_text(cost)} gold).")
@@ -3803,7 +3832,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     while not stop_event.is_set():
         try:
             click_open_wave(page, open_selector)
-            page.click(boss_menu_selector, timeout=3000)
+            page.click(boss_menu_selector, timeout=UI_CLICK_TIMEOUT_MS)
         except Exception as error:
             log(f"  Erro ao abrir a lista de Chefes: {error}")
             return False
@@ -3811,7 +3840,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         try:
             ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
             if "on" not in ready_class.split():
-                page.click(ready_selector, timeout=3000)
+                page.click(ready_selector, timeout=UI_CLICK_TIMEOUT_MS)
         except Exception as error:
             log(f"  Erro ao garantir o filtro 'Prontos': {error}")
             return False
@@ -3881,10 +3910,10 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                 ensure_boss_slots(page, wanted, log)
                 try:
                     click_open_wave(page, open_selector)
-                    page.click(boss_menu_selector, timeout=3000)
+                    page.click(boss_menu_selector, timeout=UI_CLICK_TIMEOUT_MS)
                     ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
                     if "on" not in ready_class.split():
-                        page.click(ready_selector, timeout=3000)
+                        page.click(ready_selector, timeout=UI_CLICK_TIMEOUT_MS)
                     time.sleep(0.3)
                 except Exception as error:
                     log(f"  Erro ao reabrir a lista de Chefes apos os Boss Slots: {error}")
@@ -3921,10 +3950,10 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                     continue  # a lista ja foi fechada (Escape) - o topo do laco reabre e escolhe outro alvo
                 try:
                     click_open_wave(page, open_selector)
-                    page.click(boss_menu_selector, timeout=3000)
+                    page.click(boss_menu_selector, timeout=UI_CLICK_TIMEOUT_MS)
                     ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
                     if "on" not in ready_class.split():
-                        page.click(ready_selector, timeout=3000)
+                        page.click(ready_selector, timeout=UI_CLICK_TIMEOUT_MS)
                     time.sleep(0.3)
                 except Exception as error:
                     log(f"  Erro ao reabrir a lista de Chefes apos trocar o amuleto: {error}")
@@ -3945,10 +3974,10 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                         log(f"  Erro ao preparar as pocoes dos chefes: {error}")
                     try:
                         click_open_wave(page, open_selector)
-                        page.click(boss_menu_selector, timeout=3000)
+                        page.click(boss_menu_selector, timeout=UI_CLICK_TIMEOUT_MS)
                         ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
                         if "on" not in ready_class.split():
-                            page.click(ready_selector, timeout=3000)
+                            page.click(ready_selector, timeout=UI_CLICK_TIMEOUT_MS)
                         time.sleep(0.3)
                     except Exception as error:
                         log(f"  Erro ao reabrir a lista de Chefes apos as pocoes: {error}")
@@ -3994,7 +4023,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         try:
             ready_class_now = page.eval_on_selector(ready_selector, "el => el.className") or ""
             if "on" in ready_class_now.split():
-                page.click(ready_selector, timeout=3000)
+                page.click(ready_selector, timeout=UI_CLICK_TIMEOUT_MS)
                 time.sleep(0.3)
             # le nome + status de TODAS as linhas numa unica chamada (mesmo
             # motivo do resto dessa funcao - dezenas de chefes, cada leitura
@@ -4114,9 +4143,9 @@ def fight_one_boss(page, stop_event, log, target_name, row_selector, name_select
         if go_button is None or not go_button.is_visible():
             # o card do chefe pode precisar ser expandido (clicado) antes do
             # botao 'Enfrentar' ficar visivel - mesmo padrao da Loot Pouch/Hunts.
-            page.click(row_scope, timeout=3000)
+            page.click(row_scope, timeout=UI_CLICK_TIMEOUT_MS)
             time.sleep(0.3)
-        page.click(go_scoped, timeout=5000)
+        page.click(go_scoped, timeout=UI_CLICK_TIMEOUT_MS)
         log(f"  Enfrentando '{target_name}'...")
     except Exception as error:
         log(f"  Erro ao clicar 'Enfrentar' em '{target_name}': {error}")
@@ -4205,11 +4234,11 @@ def open_helper_equip_amulet(page, char_label, preset_label, log):
                 time.sleep(0.3)
             active_tab = page.eval_on_selector(".helper-profilebtn.on", "el => el.textContent")
             if active_tab != preset_label:
-                page.click(f'.helper-profilebtn:has-text("{preset_label}")', timeout=3000)
+                page.click(f'.helper-profilebtn:has-text("{preset_label}")', timeout=UI_CLICK_TIMEOUT_MS)
                 time.sleep(0.3)
             active_menu = page.eval_on_selector(".helper-menubtn.on", "el => el.textContent")
             if not active_menu or "Equipamento" not in active_menu:
-                page.click('.helper-menubtn:has-text("Equipamento")', timeout=3000)
+                page.click('.helper-menubtn:has-text("Equipamento")', timeout=UI_CLICK_TIMEOUT_MS)
                 time.sleep(0.3)
             return True
         except Exception as error:
@@ -4265,7 +4294,7 @@ def ensure_helper_open(page):
             page.keyboard.press("Escape")
             time.sleep(0.5)
             continue
-        page.click("#tab-helper", timeout=3000)
+        page.click("#tab-helper", timeout=UI_CLICK_TIMEOUT_MS)
         wait_helper_visible(page, 2.5)
     return False
 
@@ -4306,12 +4335,12 @@ def set_helper_amulet(page, field_cls, item_name, log):
         # elemento 'not visible'.
         if not helper_state(page)["visible"] and not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
             return False
-        page.click(f'.helper-equipfield:has(.fl.{field_cls}) .helper-equipitem', timeout=3000)
+        page.click(f'.helper-equipfield:has(.fl.{field_cls}) .helper-equipitem', timeout=UI_CLICK_TIMEOUT_MS)
         time.sleep(0.4)
         search = page.query_selector('.pick-search')
         if search is None:
             return False
-        search.fill(item_name, timeout=3000)
+        search.fill(item_name, timeout=UI_CLICK_TIMEOUT_MS)
         time.sleep(0.4)
         count = page.evaluate("() => document.querySelectorAll('.sp-list.sp-book-list .sp-book-row').length")
         if not count:
@@ -4327,7 +4356,7 @@ def set_helper_amulet(page, field_cls, item_name, log):
         if use.count() == 0:
             page.keyboard.press("Escape")
             return False
-        use.first.click(timeout=3000)
+        use.first.click(timeout=UI_CLICK_TIMEOUT_MS)
         time.sleep(0.3)
         wait_helper_visible(page, 3)  # o seletor esconde o Helper; volta ao escolher
         # confere que o slot MUDOU de verdade (nao confia so' no clique) - o painel leva um
@@ -4394,7 +4423,7 @@ def set_helper_amulet_thresholds(page, equip_pct, restore_pct, log):
                 if selects.nth(index).input_value() == target:
                     applied = True
                     break
-                selects.nth(index).select_option(target, timeout=3000)
+                selects.nth(index).select_option(target, timeout=UI_CLICK_TIMEOUT_MS)
                 time.sleep(0.5)   # o Helper redesenha depois da mudanca
                 if selects.nth(index).input_value() == target:
                     applied = True
@@ -4659,9 +4688,9 @@ def open_pass_modal(page):
         return True
     try:
         try:
-            page.click("#tab-battlepass", timeout=3000)
+            page.click("#tab-battlepass", timeout=UI_CLICK_TIMEOUT_MS)
         except Exception:
-            page.click("#tab-battlepass", timeout=3000, force=True)  # janelas do HUD podem cobrir a aba
+            page.click("#tab-battlepass", timeout=UI_CLICK_TIMEOUT_MS, force=True)  # janelas do HUD podem cobrir a aba
         page.wait_for_selector("#bp-modal .bp-strip", state="visible", timeout=4000)
         return True
     except Exception as error:
@@ -4673,7 +4702,7 @@ def open_pass_modal(page):
 def close_pass_modal(page):
     try:
         if page.is_visible("#bp-modal-close"):
-            page.click("#bp-modal-close", timeout=2000)
+            page.click("#bp-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -4687,7 +4716,7 @@ def click_pass_deliver(page, log):
     try:
         if button.count() == 0 or not button.first.is_enabled():
             return False
-        button.first.click(timeout=3000)
+        button.first.click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector("#bp-modal .bp-missions-line", timeout=5000)
         return True
     except Exception as error:
@@ -4710,7 +4739,7 @@ def claim_pass_rewards(page, log):
             if button.count() == 0 or not button.first.is_visible() or not button.first.is_enabled():
                 continue
             label = (button.first.text_content() or "").strip()
-            button.first.click(timeout=3000)
+            button.first.click(timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(800)
             if page.is_visible("#confirm-modal .im-card"):
                 log(f"  O jogo pediu confirmacao ao '{label}' no passe - cancelei, retire manualmente.")
@@ -4761,7 +4790,7 @@ def deliver_pass_if_ready(page, log):
 
 def cancel_pass_confirm(page):
     try:
-        page.click("#confirm-no", timeout=2000)
+        page.click("#confirm-no", timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector("#confirm-modal .bp-detail", state="detached", timeout=2000)
     except Exception as error:
         if is_connection_dead_error(error):
@@ -4789,7 +4818,7 @@ def choose_pass_mission(page, state, order, labels, log):
         safe_name = name.replace('"', '\\"')
         label = labels[mission["band"]]
         try:
-            page.locator(f'#bp-modal .bp-missions-line .bp-mini:not(.locked):has(.bp-mini-nm:text-is("{safe_name}"))').first.click(timeout=3000)
+            page.locator(f'#bp-modal .bp-missions-line .bp-mini:not(.locked):has(.bp-mini-nm:text-is("{safe_name}"))').first.click(timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_selector("#confirm-modal .bp-detail", state="visible", timeout=3000)
             detail = page.eval_on_selector("#confirm-modal .bp-detail-l .muted", "el => el.textContent || ''") or ""
         except Exception as error:
@@ -4817,12 +4846,12 @@ def choose_pass_mission(page, state, order, labels, log):
         try:
             # garante 'Normal' marcado (e nunca confirma com a Endemoniada, que custa gold)
             if page.eval_on_selector("#confirm-modal .bp-dif-c.on", "el => el.classList.contains('dem')"):
-                page.locator("#confirm-modal .bp-dif-c:not(.dem)").first.click(timeout=3000)
+                page.locator("#confirm-modal .bp-dif-c:not(.dem)").first.click(timeout=UI_CLICK_TIMEOUT_MS)
             if page.eval_on_selector("#confirm-modal .bp-dif-c.on", "el => el.classList.contains('dem')"):
                 log(f"  Missao do passe '{name}': nao consegui marcar a versao Normal - cancelada.")
                 cancel_pass_confirm(page)
                 continue
-            page.click("#confirm-yes", timeout=3000)
+            page.click("#confirm-yes", timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_selector("#bp-modal .bp-active-row", timeout=5000)
         except Exception as error:
             if is_connection_dead_error(error):
@@ -4849,7 +4878,7 @@ def go_to_pass_hunt(page, name, state, log):
     for button in state["buttons"]:
         if "acompanhar" in button["text"].lower() and not button["disabled"]:
             try:
-                page.locator("#bp-modal .bp-actions button", has_text="Acompanhar na tela").first.click(timeout=3000)
+                page.locator("#bp-modal .bp-actions button", has_text="Acompanhar na tela").first.click(timeout=UI_CLICK_TIMEOUT_MS)
             except Exception as error:
                 if is_connection_dead_error(error):
                     raise
@@ -4880,7 +4909,7 @@ def go_to_pass_hunt(page, name, state, log):
     if PASSE_MEMORY["previous_hunt"] is None:
         PASSE_MEMORY["previous_hunt"] = GUILD_TASK_MEMORY.get("previous_hunt") or current_hunt or None
     try:
-        page.locator("#bp-modal .bp-actions button", has_text="Ir pra").first.click(timeout=3000)
+        page.locator("#bp-modal .bp-actions button", has_text="Ir pra").first.click(timeout=UI_CLICK_TIMEOUT_MS)
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -5005,7 +5034,7 @@ def click_guild_task_button(page, sec_selector, card_selector, name_sel, foot_se
                     text = (btn.text_content() or "").strip().lower()
                     if keyword in text:
                         try:
-                            btn.click(timeout=2000)
+                            btn.click(timeout=UI_CLICK_TIMEOUT_MS)
                             return True
                         except Exception:
                             break  # no proximo attempt, refaz a busca do zero
@@ -5056,8 +5085,8 @@ def execute_dom_guild_tasks_step(page, step, log):
     card_selector = step.get("card_selector", ".gwt-card")
 
     try:
-        page.click(social_selector, timeout=3000)
-        page.click(guild_selector, timeout=3000)
+        page.click(social_selector, timeout=UI_CLICK_TIMEOUT_MS)
+        page.click(guild_selector, timeout=UI_CLICK_TIMEOUT_MS)
     except Exception as error:
         log(f"  Erro ao abrir Social/Guild: {error}")
         page.keyboard.press("Escape")
@@ -5088,7 +5117,7 @@ def execute_dom_guild_tasks_step(page, step, log):
             # vez do handle ja consultado acima - o painel re-renderiza a
             # cada segundo (cronometro regressivo), entao o handle antigo as
             # vezes ja estava desanexado do DOM quando o clique chegava.
-            page.click(tasks_tab_selector, timeout=3000)
+            page.click(tasks_tab_selector, timeout=UI_CLICK_TIMEOUT_MS)
     except Exception as error:
         log(f"  Erro ao abrir a aba Tasks da guild: {error}")
         page.keyboard.press("Escape")
@@ -5212,7 +5241,7 @@ def execute_dom_guild_tasks_step(page, step, log):
         task_name, where_text = pending_task
         try:
             click_open_wave(page, open_selector)
-            page.click(hunts_selector, timeout=3000)
+            page.click(hunts_selector, timeout=UI_CLICK_TIMEOUT_MS)
             # um sleep fixo curto as vezes nao era suficiente pra lista de
             # Hunts terminar de renderizar, fazendo a busca por nome/monstros
             # da task nao achar nada (mesmo problema ja visto em outros
@@ -5270,13 +5299,7 @@ def execute_dom_guild_tasks_step(page, step, log):
                 GUILD_TASK_MEMORY["grinding"] = True
                 if hunt_name != current_hunt:
                     try:
-                        go_button = hunt_row.query_selector(go_selector)
-                        if go_button is None or not go_button.is_visible():
-                            hunt_row.click(timeout=3000)
-                            time.sleep(0.3)
-                            go_button = hunt_row.query_selector(go_selector)
-                        if go_button is not None and go_button.is_enabled():
-                            go_button.click(timeout=5000)
+                        if click_hunt_go(page, hunt_name, row_selector, hunt_name_selector, go_selector) == "clicked":
                             log(f"  Trocando para a hunt '{hunt_name}' (task '{task_name}')...")
                     except Exception as error:
                         log(f"  Erro ao trocar para a hunt '{hunt_name}': {error}")
@@ -5328,7 +5351,7 @@ def untrack_unrelated_bestiary(page, monster_names, step, log):
         name = (name_el.text_content() or "").strip().lower() if name_el else ""
         if name and name not in wanted:
             try:
-                row.click(timeout=2000)
+                row.click(timeout=UI_CLICK_TIMEOUT_MS)
                 removed += 1
             except Exception:
                 pass
@@ -5365,9 +5388,9 @@ def read_and_track_hunt_details(page, step, target_hunt, log):
             # a linha precisa estar expandida (clicada) antes do botao
             # 'Detalhes' ficar visivel - mesmo padrao ja visto no botao
             # 'Enfrentar' dos chefes e 'Caçar' das hunts.
-            page.click(row_scope, timeout=3000)
+            page.click(row_scope, timeout=UI_CLICK_TIMEOUT_MS)
             time.sleep(0.3)
-        page.click(f"{row_scope} {details_btn_selector}", timeout=3000)
+        page.click(f"{row_scope} {details_btn_selector}", timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(f"{modal_selector} {card_selector}", timeout=4000)
     except Exception as error:
         log(f"  Erro ao abrir Detalhes da hunt '{target_hunt}': {error}")
@@ -5403,7 +5426,7 @@ def read_and_track_hunt_details(page, step, target_hunt, log):
         try:
             safe_name = name.replace('"', '\\"')
             btn_selector = f'{card_selector}:has({card_name_selector}:text-is("{safe_name}")) {track_selector}'
-            page.click(btn_selector, timeout=3000)
+            page.click(btn_selector, timeout=UI_CLICK_TIMEOUT_MS)
             tracked += 1
         except Exception as error:
             log(f"  Erro ao ligar rastreio de '{name}': {error}")
@@ -5412,7 +5435,7 @@ def read_and_track_hunt_details(page, step, target_hunt, log):
         log(f"  {tracked} criatura(s) marcada(s) pra rastrear (direto pelos Detalhes da hunt).")
 
     try:
-        page.click(close_selector, timeout=2000)
+        page.click(close_selector, timeout=UI_CLICK_TIMEOUT_MS)
     except Exception:
         page.keyboard.press("Escape")
 
@@ -5467,7 +5490,7 @@ def peek_next_hunt(page, current_hunt, open_selector, hunts_selector, row_select
     confirmacao, e 'find_and_go_to_hunt'."""
     try:
         click_open_wave(page, open_selector)
-        page.click(hunts_selector, timeout=3000)
+        page.click(hunts_selector, timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
     except Exception as error:
@@ -5507,7 +5530,7 @@ def start_first_available_hunt(page, open_selector, hunts_selector, row_selector
     comecar a cacar em alguma fase."""
     try:
         click_open_wave(page, open_selector)
-        page.click(hunts_selector, timeout=3000)
+        page.click(hunts_selector, timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
     except Exception as error:
@@ -5539,13 +5562,7 @@ def start_first_available_hunt(page, open_selector, hunts_selector, row_selector
         return False
 
     try:
-        go_button = target_row.query_selector(go_selector)
-        if go_button is None or not go_button.is_visible():
-            target_row.click(timeout=3000)
-            time.sleep(0.3)
-            go_button = target_row.query_selector(go_selector)
-        if go_button is not None and go_button.is_enabled():
-            go_button.click(timeout=5000)
+        if click_hunt_go(page, target_name, row_selector, name_selector, go_selector) == "clicked":
             log(f"  Sem hunt ativa - comecando a cacar em '{target_name}'.")
             return True
         log(f"  Botao 'Cacar' indisponivel pra '{target_name}'.")
@@ -5565,7 +5582,7 @@ def read_hunt_list(page, log, open_selector="#wave-title", hunts_selector='.tp-o
     no codigo."""
     try:
         click_open_wave(page, open_selector)
-        page.click(hunts_selector, timeout=3000)
+        page.click(hunts_selector, timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(row_selector, timeout=4000)
         clear_hunt_search(page)
     except Exception as error:
@@ -5620,11 +5637,11 @@ def read_boss_list(page, log, open_selector="#wave-title", boss_menu_selector='.
     for _attempt in range(2):  # o menu de Teleportes as vezes ainda nao abriu no 1o clique
         try:
             click_open_wave(page, open_selector)
-            page.click(boss_menu_selector, timeout=3000)
+            page.click(boss_menu_selector, timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_selector(row_selector, timeout=4000)
             ready_class = page.eval_on_selector(ready_selector, "el => el.className") or ""
             if "on" in ready_class.split():
-                page.click(ready_selector, timeout=3000)
+                page.click(ready_selector, timeout=UI_CLICK_TIMEOUT_MS)
                 page.wait_for_timeout(300)
             opened = True
             break
@@ -5690,7 +5707,7 @@ def finish_completed_bestiary_tracks(page, step, log):
         row, name = target
         tried.add(name)
         try:
-            row.click(timeout=2000)
+            row.click(timeout=UI_CLICK_TIMEOUT_MS)
         except Exception as error:
             # CONFIRMADO nos logs: o painel do grupo ('#panel-party', HUD livre)
             # pode ficar POR CIMA do quadro de rastreio e interceptar o clique
@@ -5717,7 +5734,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
     hunt disponivel da lista - so avanca (e so ENTAO essa vira a nova hunt
     padrao) se ele confirmar."""
     try:
-        current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+        current_hunt = hunt_name_or_empty(page.eval_on_selector("#wave-title", "el => el.textContent"))
     except Exception:
         return True
 
@@ -5771,7 +5788,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
         if not started:
             return True
         try:
-            current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+            current_hunt = hunt_name_or_empty(page.eval_on_selector("#wave-title", "el => el.textContent"))
         except Exception:
             return True
         if not current_hunt:
@@ -5785,7 +5802,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
         already_complete = set()
         try:
             click_open_wave(page, open_selector)
-            page.click(hunts_selector, timeout=3000)
+            page.click(hunts_selector, timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_selector(row_selector, timeout=4000)
             clear_hunt_search(page)
             # le os monstros da hunt E liga 'Rastrear na tela' de cada um,
@@ -5953,9 +5970,9 @@ def fetch_build_code(context, vocation, level, config, log):
         return fetch_build_code_headless(vocation, level, config, log)
     try:
         site_page.goto("https://baiakidle-build-optimizer.pages.dev/", timeout=15000)
-        site_page.click(f'.voc-choice:has-text("{vocation}")', timeout=5000)
-        site_page.fill("#level", str(level), timeout=5000)
-        site_page.select_option("#buildMode", config.get("mode", "dps"), timeout=5000)
+        site_page.click(f'.voc-choice:has-text("{vocation}")', timeout=UI_CLICK_TIMEOUT_MS)
+        site_page.fill("#level", str(level), timeout=UI_CLICK_TIMEOUT_MS)
+        site_page.select_option("#buildMode", config.get("mode", "dps"), timeout=UI_CLICK_TIMEOUT_MS)
         site_page.wait_for_timeout(300)  # o site pode trocar as opcoes de foco ao mudar o modo
 
         focus_value = config.get("focus") or ""
@@ -5963,7 +5980,7 @@ def fetch_build_code(context, vocation, level, config, log):
         if focus_value and focus_el is not None and not focus_el.is_disabled():
             available = [opt.get_attribute("value") for opt in focus_el.query_selector_all("option")]
             if focus_value in available:
-                site_page.select_option("#elementFocus", focus_value, timeout=5000)
+                site_page.select_option("#elementFocus", focus_value, timeout=UI_CLICK_TIMEOUT_MS)
                 site_page.wait_for_timeout(200)  # pode liberar foco secundario logo em seguida
             else:
                 log(f"  Foco '{focus_value}' nao disponivel pra {vocation}/{config.get('mode', 'dps')} - usando o padrao do site.")
@@ -5977,7 +5994,7 @@ def fetch_build_code(context, vocation, level, config, log):
         if secondary_value and secondary_el is not None and not secondary_el.is_disabled():
             available_sec = [opt.get_attribute("value") for opt in secondary_el.query_selector_all("option")]
             if secondary_value in available_sec:
-                site_page.select_option("#secondaryFocus", secondary_value, timeout=5000)
+                site_page.select_option("#secondaryFocus", secondary_value, timeout=UI_CLICK_TIMEOUT_MS)
                 site_page.wait_for_timeout(200)  # pode liberar foco terciario logo em seguida
 
                 tertiary_value = config.get("tertiary_focus") or ""
@@ -5985,7 +6002,7 @@ def fetch_build_code(context, vocation, level, config, log):
                 if tertiary_value and tertiary_el is not None and not tertiary_el.is_disabled():
                     available_ter = [opt.get_attribute("value") for opt in tertiary_el.query_selector_all("option")]
                     if tertiary_value in available_ter:
-                        site_page.select_option("#tertiaryFocus", tertiary_value, timeout=5000)
+                        site_page.select_option("#tertiaryFocus", tertiary_value, timeout=UI_CLICK_TIMEOUT_MS)
                     else:
                         log(f"  Foco terciario '{tertiary_value}' nao disponivel - ignorando.")
             else:
@@ -5993,10 +6010,10 @@ def fetch_build_code(context, vocation, level, config, log):
 
         force_xp = site_page.query_selector("#forceXp")
         if force_xp is not None and not force_xp.is_disabled() and force_xp.is_checked() != bool(config.get("force_xp")):
-            force_xp.click(timeout=5000)
+            force_xp.click(timeout=UI_CLICK_TIMEOUT_MS)
         force_loot = site_page.query_selector("#forceLoot")
         if force_loot is not None and not force_loot.is_disabled() and force_loot.is_checked() != bool(config.get("force_loot")):
-            force_loot.click(timeout=5000)
+            force_loot.click(timeout=UI_CLICK_TIMEOUT_MS)
 
         site_page.wait_for_timeout(800)  # recalculo do codigo e client-side, rapido, mas assincrono
         code_el = site_page.query_selector("#buildCode")
@@ -6154,7 +6171,7 @@ def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selec
         # mexer nela.
         bring_game_to_front(page)
         click_open_wave(page, open_selector)
-        page.click(tree_tab_selector, timeout=3000)
+        page.click(tree_tab_selector, timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(char_selector, timeout=4000)
     except Exception as error:
         log(f"  Erro ao abrir Progressao/Build: {error}")
@@ -6167,7 +6184,7 @@ def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selec
     target = None
     for char_el in page.query_selector_all(char_selector):
         try:
-            char_el.hover(timeout=2000)
+            char_el.hover(timeout=UI_CLICK_TIMEOUT_MS)
         except Exception:
             pass
         if detect_vocation(char_el.get_attribute("data-tip")) == vocation:
@@ -6181,7 +6198,7 @@ def open_tree_and_select_char(page, open_selector, tree_tab_selector, char_selec
         # ao clique (visto 2x no log) - confere se pegou e tenta mais uma vez.
         for attempt in (1, 2):
             try:
-                target.click(timeout=2000 if attempt == 1 else 5000)
+                target.click(timeout=UI_CLICK_TIMEOUT_MS)
                 page.wait_for_timeout(400)
                 break
             except Exception as error:
@@ -6307,11 +6324,11 @@ def execute_dom_auto_build_step(page, step, log):
             # nao estiver ativo (mesmo padrao de 'dom_ensure_active').
             import_btn = page.query_selector(import_btn_selector)
             if import_btn is not None and "active" not in (import_btn.get_attribute("class") or "").split():
-                page.click(import_btn_selector, timeout=5000)
+                page.click(import_btn_selector, timeout=UI_CLICK_TIMEOUT_MS)
                 page.wait_for_timeout(300)
 
-            page.fill(import_input_selector, code, timeout=3000)
-            page.click(load_btn_selector, timeout=3000)
+            page.fill(import_input_selector, code, timeout=UI_CLICK_TIMEOUT_MS)
+            page.click(load_btn_selector, timeout=UI_CLICK_TIMEOUT_MS)
             page.wait_for_timeout(500)
 
             # importar troca a build de verdade (custa gold) - o jogo pede
@@ -6325,7 +6342,7 @@ def execute_dom_auto_build_step(page, step, log):
                     log(f"  BLOQUEADO por seguranca: confirmacao da build diz '{confirm_text}' - nao clicado.")
                 else:
                     log(f"  Confirmando: {confirm_text}")
-                    page.click(confirm_yes_selector, timeout=3000)
+                    page.click(confirm_yes_selector, timeout=UI_CLICK_TIMEOUT_MS)
                     page.wait_for_timeout(500)
 
             msg_el = page.query_selector(msg_selector)
@@ -6402,7 +6419,7 @@ def dismiss_blocking_overlays(page, log):
     try:
         changelog_close = page.query_selector("#changelog-modal-close")
         if changelog_close is not None and changelog_close.is_visible():
-            changelog_close.click(timeout=3000)
+            changelog_close.click(timeout=UI_CLICK_TIMEOUT_MS)
             log("  Fechei a tela de novidades/atualizacao do jogo.")
             return True
     except Exception as error:
@@ -6413,7 +6430,7 @@ def dismiss_blocking_overlays(page, log):
     try:
         offline_close = page.query_selector("#offline-modal-close")
         if offline_close is not None and offline_close.is_visible():
-            offline_close.click(timeout=3000)
+            offline_close.click(timeout=UI_CLICK_TIMEOUT_MS)
             log("  Fechei o resumo de treino offline ('Bem-vindo de volta').")
             return True
     except Exception as error:
@@ -6427,7 +6444,8 @@ def dismiss_blocking_overlays(page, log):
             log("  Conexao perdida - clicando em 'Reconectar agora'...")
             retry_btn = page.query_selector("#conn-retry")
             if retry_btn is not None:
-                retry_btn.click(timeout=3000)
+                retry_btn.click(timeout=UI_CLICK_TIMEOUT_MS)
+                wait_game_ready(page, log)  # o jogo recarrega a tela depois de reconectar
             return True
     except Exception as error:
         if is_connection_dead_error(error):
@@ -6448,7 +6466,7 @@ def dismiss_blocking_overlays(page, log):
                 log(f"  Mercado/leilao aberto ha mais de {AUCTION_MODAL_GRACE_SECONDS // 60}min - fechando...")
                 close_btn = page.query_selector("#auction-modal-close")
                 if close_btn is not None:
-                    close_btn.click(timeout=3000)
+                    close_btn.click(timeout=UI_CLICK_TIMEOUT_MS)
                 AUCTION_MODAL_MEMORY["first_seen_open"] = None
                 return True
             # dentro do periodo de graca - pode ser o usuario usando o
@@ -6464,6 +6482,20 @@ def dismiss_blocking_overlays(page, log):
         log(f"  Erro ao lidar com o Mercado/leilao: {error}")
 
     return False
+
+
+# Lugares do menu de Teleportes que NAO sao hunts - o '#wave-title' mostra o nome
+# deles (atualizacao de 17/10: "Cidade", "Casa", "Dungeon"...). Tratados como
+# "sem hunt": nunca viram 'ultima hunt conhecida' nem hunt do Bestiary.
+NON_HUNT_PLACES = {
+    "cidade", "treino online", "casa", "treino offline", "hunt offline", "dungeon",
+    "cidade pvp", "expedição", "expedicao", "—", "-",
+}
+
+
+def hunt_name_or_empty(name):
+    name = (name or "").strip()
+    return "" if name.casefold() in NON_HUNT_PLACES else name
 
 
 def return_to_default_hunt(page, log, force=False):
@@ -6510,7 +6542,7 @@ def return_to_default_hunt(page, log, force=False):
         if is_connection_dead_error(error):
             raise
         return True
-    if current_hunt:
+    if hunt_name_or_empty(current_hunt):
         LAST_KNOWN_HUNT_MEMORY["name"] = current_hunt
     if current_hunt == default_hunt:
         return True
@@ -6531,6 +6563,28 @@ def return_to_default_hunt(page, log, force=False):
         log=log,
     )
     return True
+
+
+def ensure_hunt_loop(page, log):
+    """Mantem o 'Loop' da hunt ligado ('#loop-toggle', "Repetir a fase
+    automaticamente ao concluir"). Desde a atualizacao de 17/10, com ele
+    desligado o personagem volta pra Cidade a cada fase concluida e o bot
+    precisava mandar de novo (recarregando o mapa toda vez); e ele pode voltar
+    a desligar ao trocar de hunt. So existe dentro de uma hunt."""
+    try:
+        loop_class = page.get_attribute("#loop-toggle", "class", timeout=1000)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return
+    if loop_class is None or "on" in loop_class.split():
+        return
+    try:
+        page.click("#loop-toggle", timeout=UI_CLICK_TIMEOUT_MS)
+        log("  Loop da hunt estava desligado - liguei (repetir a fase ao concluir).")
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
 
 
 def ensure_active_hunt(page, log):
@@ -6571,7 +6625,7 @@ def ensure_active_hunt(page, log):
         PASSE_MEMORY["grinding_since"] = None
 
     try:
-        current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+        current_hunt = hunt_name_or_empty(page.eval_on_selector("#wave-title", "el => el.textContent"))
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -6579,6 +6633,7 @@ def ensure_active_hunt(page, log):
 
     if current_hunt:
         LAST_KNOWN_HUNT_MEMORY["name"] = current_hunt
+        ensure_hunt_loop(page, log)
         return_to_default_hunt(page, log, force=False)
         return
 
@@ -6702,6 +6757,47 @@ GAME_READY_JS = """() => {
         && wave !== '' && wave !== '—';
 }"""
 GAME_READY_SETTLE_SECONDS = 3
+
+
+# Pagina lenta: quantas vezes seguidas a resposta passou do limite, a ultima
+# medida e quando foi o ultimo reload por lentidao (nao recarrega em sequencia).
+PAGE_SLOW_SECONDS = 2.0
+PAGE_SLOW_STRIKES = 3
+PAGE_SLOW_RELOAD_GAP_SECONDS = 10 * 60
+PAGE_SLOW_MEMORY = {"strikes": 0, "last_seconds": 0.0, "last_reload": 0.0}
+
+
+def page_is_slow(page):
+    """Mede uma ida-e-volta minima a pagina (barato, roda a cada tick). True
+    quando passou de PAGE_SLOW_SECONDS em PAGE_SLOW_STRIKES medidas seguidas."""
+    started = time.monotonic()
+    try:
+        page.evaluate("1")
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return False
+    elapsed = time.monotonic() - started
+    PAGE_SLOW_MEMORY["last_seconds"] = elapsed
+    PAGE_SLOW_MEMORY["strikes"] = PAGE_SLOW_MEMORY["strikes"] + 1 if elapsed > PAGE_SLOW_SECONDS else 0
+    if PAGE_SLOW_MEMORY["strikes"] >= PAGE_SLOW_STRIKES:
+        PAGE_SLOW_MEMORY["strikes"] = 0
+        return True
+    return False
+
+
+def game_loading(page):
+    """True se a tela de carregamento do jogo ('#loading-overlay') esta visivel."""
+    try:
+        return bool(page.evaluate(
+            """() => { const e = document.querySelector('#loading-overlay'); if (!e) return false;
+                const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; }"""
+        ))
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return False
 
 
 def wait_game_ready(page, log, timeout=60):
@@ -6924,6 +7020,33 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                     # (ver PAGE_RELOAD_INTERVAL_SECONDS) - so quando nao ha nada
                     # de prioridade maior em andamento, pro reload nao cortar um
                     # chefe ou uma task de guild pela metade.
+                    # o proprio jogo recarregou/reconectou (tela "Carregando /
+                    # Conectando / Montando o mapa" por cima): espera terminar
+                    # antes das rotinas, senao todo clique cai nela.
+                    if game_loading(page):
+                        log("  Jogo carregando - esperando terminar antes das rotinas...")
+                        wait_game_ready(page, log)
+                        stop_event.wait(TICK_SECONDS)
+                        continue
+
+                    # pagina lenta (resposta > PAGE_SLOW_SECONDS varias vezes
+                    # seguidas): recarrega JA, sem esperar a hora - com o jogo
+                    # travado os cliques das rotinas estouram o prazo (visto
+                    # na atualizacao de 17/10: 6 fps, ate 40s pra responder).
+                    # Vale mesmo durante task/treino (o progresso e do servidor).
+                    if page_is_slow(page) and time.monotonic() - PAGE_SLOW_MEMORY["last_reload"] >= PAGE_SLOW_RELOAD_GAP_SECONDS:
+                        log(f"Pagina do jogo lenta (resposta de {PAGE_SLOW_MEMORY['last_seconds']:.1f}s) - recarregando agora.")
+                        PAGE_SLOW_MEMORY["last_reload"] = time.monotonic()
+                        try:
+                            reload_game_page(page, log)
+                        except Exception as error:
+                            if is_connection_dead_error(error):
+                                raise
+                            log(f"Erro ao recarregar a pagina do jogo: {error}")
+                        next_page_reload = time.monotonic() + PAGE_RELOAD_INTERVAL_SECONDS
+                        stop_event.wait(TICK_SECONDS)
+                        continue
+
                     if now >= next_page_reload:
                         if task_grinding() or TRAINING_MEMORY.get("waiting"):
                             next_page_reload = now + TICK_SECONDS  # tenta de novo no proximo tick
