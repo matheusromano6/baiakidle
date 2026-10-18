@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.24.0"
+VERSION = "4.25.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -4143,6 +4143,55 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     return True
 
 
+def boss_difficulty_config():
+    """Dificuldade escolhida pro chefe (settings.json -> 'boss_difficulty',
+    padrao 1). Acima da maior liberada, o jogo nao deixa - fica na maior."""
+    try:
+        return max(1, int(load_settings().get("boss_difficulty") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def confirm_boss_difficulty(page, log):
+    """Atualizacao de 18/10: depois de 'Enfrentar' o jogo abre 'Dificuldade do
+    boss' ('#confirm-modal .bdiff', valor em '.bdiff-value', setas
+    '.bdiff-dir-prev/-next' - desabilitadas no limite) e so luta com 'Iniciar
+    luta' ('#confirm-yes'). Ajusta pra dificuldade configurada e confirma.
+    Retorna o nivel usado, None se a tela nao apareceu (luta direta, jeito
+    antigo) ou False se nao conseguiu confirmar."""
+    try:
+        page.wait_for_selector("#confirm-modal .bdiff", state="visible", timeout=5000)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        return None
+    target = boss_difficulty_config()
+    try:
+        for _ in range(60):
+            current = int(re.sub(r"\D", "", page.text_content("#confirm-modal .bdiff-value") or "") or 0)
+            if current == target:
+                break
+            arrow = "#confirm-modal .bdiff-dir-next" if current < target else "#confirm-modal .bdiff-dir-prev"
+            if page.is_disabled(arrow):
+                break  # limite: maior liberada (ou a 1)
+            page.click(arrow, timeout=UI_CLICK_TIMEOUT_MS)
+            time.sleep(0.2)
+        level = int(re.sub(r"\D", "", page.text_content("#confirm-modal .bdiff-value") or "") or 0)
+        if level != target:
+            log_once(f"boss-dif-{target}-{level}", f"  Dificuldade {target} ainda nao liberada - usando {level}.", log)
+        page.click("#confirm-yes", timeout=UI_CLICK_TIMEOUT_MS)
+        return level
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        log(f"  Erro ao escolher a dificuldade do chefe: {error}")
+        try:
+            page.click("#confirm-no", timeout=UI_CLICK_TIMEOUT_MS)
+        except Exception:
+            pass
+        return False
+
+
 def fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector):
     """Enfrenta UM chefe especifico (ja confirmado pronto pelo chamador) e
     espera o combate de verdade acontecer (barra de vida aparecer e sumir).
@@ -4174,10 +4223,13 @@ def fight_one_boss(page, stop_event, log, target_name, row_selector, name_select
             page.click(row_scope, timeout=UI_CLICK_TIMEOUT_MS)
             time.sleep(0.3)
         page.click(go_scoped, timeout=UI_CLICK_TIMEOUT_MS)
-        log(f"  Enfrentando '{target_name}'...")
     except Exception as error:
         log(f"  Erro ao clicar 'Enfrentar' em '{target_name}': {error}")
         return False
+    level = confirm_boss_difficulty(page, log)
+    if level is False:
+        return False
+    log(f"  Enfrentando '{target_name}'" + (f" (dificuldade {level})" if level else "") + "...")
 
     # espera o combate comecar (a barra de vida do chefe aparecer)
     started = False

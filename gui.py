@@ -1278,6 +1278,7 @@ class BotGUI:
                     def on_saved(bosses, slots_config):
                         step["bosses"] = bosses
                         bot.save_routines(self.routines)
+                        self.settings["boss_difficulty"] = slots_config.pop("difficulty", 1)
                         self.settings["boss_slots"] = slots_config
                         bot.save_settings(self.settings)
                         bot.BOSS_SLOTS_MEMORY["blocked"] = None  # teto/modo novo: pode voltar a trocar
@@ -1305,7 +1306,7 @@ class BotGUI:
                     BossPicker(
                         self.root, step.get("bosses", []), on_saved=on_saved,
                         kills=bot.BOSS_KILLS_MEMORY, on_refresh=on_refresh,
-                        slots_config=bot.boss_slots_config(),
+                        slots_config={**bot.boss_slots_config(), "difficulty": bot.boss_difficulty_config()},
                     )
 
                 potion_items = bot.potion_config()["items"]

@@ -146,6 +146,12 @@ class BossPicker(ctk.CTkToplevel):
             pay_row, text="Teto/dia:", variable=self.slots_mode_var, value="cap",
             font=theme.FONT_BODY, text_color=theme.TEXT, fg_color=theme.ACCENT,
         ).pack(side="left", padx=(10, 0))
+        diff_row = ctk.CTkFrame(slots_box, fg_color="transparent")
+        diff_row.pack(fill="x", padx=10, pady=(0, 8))
+        ctk.CTkLabel(diff_row, text="Dificuldade dos chefes:", font=theme.FONT_BODY, text_color=theme.TEXT).pack(side="left")
+        self.difficulty_var = tk.StringVar(value=str(slots.get("difficulty", 1)))
+        ctk.CTkEntry(diff_row, textvariable=self.difficulty_var, width=50, fg_color=theme.PANEL_ALT).pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(diff_row, text="(acima da liberada, usa a maior liberada)", font=theme.FONT_BODY, text_color=theme.MUTED).pack(side="left", padx=(6, 0))
         cap = slots.get("daily_cap", 500000)
         self.slots_cap_var = tk.StringVar(value=f"{int(cap):,}".replace(",", "."))
         ctk.CTkEntry(pay_row, textvariable=self.slots_cap_var, width=110, fg_color=theme.PANEL_ALT).pack(side="left")
@@ -359,6 +365,7 @@ class BossPicker(ctk.CTkToplevel):
             "enabled": bool(self.slots_enabled_var.get()),
             "pay_all": self.slots_mode_var.get() == "all",
             "daily_cap": int(digits) if digits else 0,
+            "difficulty": max(1, int("".join(ch for ch in self.difficulty_var.get() if ch.isdigit()) or 1)),
         }
         if self.on_saved:
             self.on_saved(self.bosses, slots_config)
