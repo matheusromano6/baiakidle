@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.26.0"
+VERSION = "4.26.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3189,8 +3189,11 @@ def prepare_boss_potions(page, log):
                 if attempt == 0:
                     log("  Compra de pocoes nao confirmou - tentando mais uma vez...")
                     page.wait_for_timeout(2000)
-            collect_potions_from_inbox(page, log)
-            stock = count_backpack_potions(page)
+        # SEMPRE busca na Caixa de entrada quando falta: compras de antes (rotina
+        # diaria, outra sequencia, coleta que falhou) ficavam presas la e o bot
+        # so' coletava logo apos comprar - ficava 'so tenho N' pra sempre.
+        collect_potions_from_inbox(page, log)
+        stock = count_backpack_potions(page)
     for name, qty in wanted.items():
         have = stock.get(name, 0)
         if have < qty:
