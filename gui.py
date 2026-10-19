@@ -12,6 +12,7 @@ import customtkinter as ctk
 import bot
 import theme
 from boss_picker import BossPicker, _Tooltip
+from rift_picker import RiftPicker
 from attribute_picker import AttributePicker
 from build_config_picker import BuildConfigPicker
 from hunt_picker import HuntPicker
@@ -1332,6 +1333,31 @@ class BotGUI:
                     text_color=theme.MUTED,
                     font=theme.FONT_BODY,
                     command=open_boss_picker,
+                ).pack(side="right", padx=4)
+
+            # 'dom_rift': escolher as hunts Nightmare (e a meta/h) - tela propria.
+            for step in routine["steps"]:
+                if step.get("type") != "dom_rift":
+                    continue
+
+                def open_rift_picker(step=step):
+                    def on_saved(hunts):
+                        step["hunts"] = hunts
+                        bot.save_routines(self.routines)
+                        bot.FORCE_RUN_NOW.add("rift_essence")
+                        self.rebuild_routine_rows()
+
+                    RiftPicker(self.root, step.get("hunts", []), on_saved=on_saved)
+
+                ctk.CTkButton(
+                    row,
+                    text=f"Hunts ({sum(1 for h in step.get('hunts', []) if h.get('enabled'))})",
+                    width=90,
+                    fg_color=theme.PANEL_ALT,
+                    hover_color=theme.BORDER,
+                    text_color=theme.MUTED,
+                    font=theme.FONT_BODY,
+                    command=open_rift_picker,
                 ).pack(side="right", padx=4)
 
             # 'dom_codex_campaign' tem a fila de entradas do Codex (por
