@@ -12,7 +12,6 @@ import customtkinter as ctk
 import bot
 import theme
 from boss_picker import BossPicker, _Tooltip
-from rift_picker import RiftPicker
 from attribute_picker import AttributePicker
 from build_config_picker import BuildConfigPicker
 from hunt_picker import HuntPicker
@@ -102,9 +101,8 @@ class BotGUI:
 
         self.settings = bot.load_settings()
         bot.SOUND_MEMORY["enabled"] = self.settings.get("sound_enabled", True)
-        bot.ADVANCE_MEMORY["enabled"] = self.settings.get("auto_advance_hunt", False)
+        bot.ADVANCE_MEMORY["enabled"] = False  # 'avancar hunt automaticamente' saiu (v4.27.0)
         bot.DEFAULT_HUNT_MEMORY["name"] = self.settings.get("default_hunt", "")
-        self.advance_var = tk.BooleanVar(value=bot.ADVANCE_MEMORY.get("enabled", False))
         self.settings_window = None
         self.default_hunt_label = None
         self.hunt_confirm_window = None
@@ -334,41 +332,6 @@ class BotGUI:
         ctk.CTkLabel(win, text="CONFIGURAÇÕES", font=theme.FONT_HEADER, text_color=theme.MUTED).pack(
             anchor="w", padx=20, pady=(20, 10)
         )
-
-        ctk.CTkCheckBox(
-            win,
-            text="Avançar hunt automaticamente",
-            variable=self.advance_var,
-            command=self.toggle_advance,
-            font=theme.FONT_BODY,
-            text_color=theme.TEXT,
-            fg_color=theme.ACCENT,
-            hover_color=theme.ACCENT_HOVER,
-        ).pack(anchor="w", padx=20, pady=6)
-
-        hunt_row = ctk.CTkFrame(win, fg_color="transparent")
-        hunt_row.pack(fill="x", padx=20, pady=6)
-        ctk.CTkLabel(hunt_row, text="Hunt padrão:", font=theme.FONT_BODY, text_color=theme.TEXT).pack(
-            side="left"
-        )
-        self.default_hunt_label = ctk.CTkLabel(
-            hunt_row,
-            text=self.settings.get("default_hunt") or "(nenhuma)",
-            font=theme.FONT_BODY,
-            text_color=theme.MUTED,
-        )
-        self.default_hunt_label.pack(side="left", padx=(6, 0))
-        ctk.CTkButton(
-            win,
-            text="Escolher hunt padrão",
-            command=self.open_hunt_picker,
-            fg_color=theme.PANEL_ALT,
-            hover_color=theme.BORDER,
-            text_color=theme.TEXT,
-            font=theme.FONT_BODY,
-            border_width=1,
-            border_color=theme.BORDER,
-        ).pack(fill="x", padx=20, pady=(0, 6))
 
         ctk.CTkButton(
             win,
@@ -600,9 +563,8 @@ class BotGUI:
 
         self.settings = bot.load_settings()
         bot.SOUND_MEMORY["enabled"] = self.settings.get("sound_enabled", True)
-        bot.ADVANCE_MEMORY["enabled"] = self.settings.get("auto_advance_hunt", False)
+        bot.ADVANCE_MEMORY["enabled"] = False  # 'avancar hunt automaticamente' saiu (v4.27.0)
         bot.DEFAULT_HUNT_MEMORY["name"] = self.settings.get("default_hunt", "")
-        self.advance_var.set(bot.ADVANCE_MEMORY.get("enabled", False))
         if self.default_hunt_label is not None and self.default_hunt_label.winfo_exists():
             self.default_hunt_label.configure(text=self.settings.get("default_hunt") or "(nenhuma)")
         self._refresh_sound_button()
@@ -798,11 +760,20 @@ class BotGUI:
         bot.save_settings(self.settings)
         self._refresh_sound_button()
 
-    def toggle_advance(self):
-        enabled = self.advance_var.get()
-        bot.ADVANCE_MEMORY["enabled"] = enabled
-        self.settings["auto_advance_hunt"] = enabled
-        bot.save_settings(self.settings)
+    def build_main_hunt_row(self):
+        """Hunt principal (com nivel Normal/Nightmare/Hell): pra onde o bot vai e
+        volta depois de chefes, passe, guild etc. Fica na lista de rotinas."""
+        row = ctk.CTkFrame(self.routines_frame, fg_color=theme.PANEL_ALT, corner_radius=6)
+        row.pack(fill="x", padx=6, pady=4)
+        ctk.CTkLabel(row, text="Hunt principal:", font=theme.FONT_BODY, text_color=theme.TEXT).pack(side="left", padx=(10, 0), pady=8)
+        self.default_hunt_label = ctk.CTkLabel(
+            row, text=self.settings.get("default_hunt") or "(nenhuma)", font=theme.FONT_BODY, text_color=theme.ACCENT,
+        )
+        self.default_hunt_label.pack(side="left", padx=(6, 0))
+        ctk.CTkButton(
+            row, text="Escolher", width=90, command=self.open_hunt_picker, fg_color=theme.PANEL,
+            hover_color=theme.BORDER, text_color=theme.MUTED, font=theme.FONT_BODY,
+        ).pack(side="right", padx=8)
 
     def open_hunt_picker(self):
         def on_saved(name):
@@ -1210,6 +1181,8 @@ class BotGUI:
             return
 
         for routine in self.routines:
+            if routine["id"] == "bestiary_hunt":
+                self.build_main_hunt_row()  # logo depois das Tarefas da Guild
             flag = self.flags[routine["id"]]
             container = ctk.CTkFrame(self.routines_frame, fg_color="transparent")
             container.pack(fill="x", padx=6, pady=4)
@@ -1333,31 +1306,6 @@ class BotGUI:
                     text_color=theme.MUTED,
                     font=theme.FONT_BODY,
                     command=open_boss_picker,
-                ).pack(side="right", padx=4)
-
-            # 'dom_rift': escolher as hunts Nightmare (e a meta/h) - tela propria.
-            for step in routine["steps"]:
-                if step.get("type") != "dom_rift":
-                    continue
-
-                def open_rift_picker(step=step):
-                    def on_saved(hunts):
-                        step["hunts"] = hunts
-                        bot.save_routines(self.routines)
-                        bot.FORCE_RUN_NOW.add("rift_essence")
-                        self.rebuild_routine_rows()
-
-                    RiftPicker(self.root, step.get("hunts", []), on_saved=on_saved)
-
-                ctk.CTkButton(
-                    row,
-                    text=f"Hunts ({sum(1 for h in step.get('hunts', []) if h.get('enabled'))})",
-                    width=90,
-                    fg_color=theme.PANEL_ALT,
-                    hover_color=theme.BORDER,
-                    text_color=theme.MUTED,
-                    font=theme.FONT_BODY,
-                    command=open_rift_picker,
                 ).pack(side="right", padx=4)
 
             # 'dom_codex_campaign' tem a fila de entradas do Codex (por

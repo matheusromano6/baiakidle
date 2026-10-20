@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.26.1"
+VERSION = "4.27.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1040,26 +1040,6 @@ GUILD_TASK_DIFFICULTIES = [
     {"key": "dificil", "label": "Difícil", "card_class": "gwt-hard", "enabled": True},
 ]
 
-# Death Essence esperada por hora na versao Nightmare de cada hunt (tabela do
-# usuario, 19/10). A rotina do Rift passa pra proxima hunt marcada com >= 85%.
-RIFT_DEFAULT_HUNTS = [
-    {"name": name, "rate": rate, "enabled": False}
-    for name, rate in (
-        ("Troll Cave", 18), ("Elf", 19), ("Amazon", 20), ("Minotaur", 21), ("Kongra", 23), ("Cyclopolis", 24),
-        ("Corym Skirmisher", 25), ("Stone Refiner", 26), ("Giant Spider", 27), ("Crawler", 28),
-        ("Glooth Bandit", 29), ("Hero", 30), ("Cult", 32), ("Dragon Lair", 33), ("Werebadge", 34),
-        ("Hydra", 35), ("Behemoth", 36), ("Orclops", 37), ("Crumbling Caverns", 38), ("Grim Reaper", 39),
-        ("Wyrm", 41), ("Candia", 42), ("Werehyaena", 43), ("Asuras", 44),
-    )
-]
-RIFT_MIN_SECONDS = 60 * 60       # fica pelo menos 1h em cada hunt
-RIFT_MAX_SECONDS = 2 * 60 * 60   # nunca mais que 2h numa hunt ruim
-RIFT_MIN_RATIO = 0.85            # passa com >= 85% do esperado por hora
-# 'target' = "Hunt · Nightmare" em andamento (vira a hunt 'base', ve
-# return_to_default_hunt). O progresso (hunt, tempo DENTRO dela, essence no
-# inicio, concluidas) fica no .state.json pra sobreviver a reinicios do bot.
-RIFT_MEMORY = {"target": None}
-
 # Mesmas 3 dificuldades pras Missoes do Passe ('card_class' aqui e a classe da
 # etiqueta de dificuldade da missao dentro do modal do Passe).
 PASSE_DIFFICULTIES = [
@@ -1274,16 +1254,6 @@ DEFAULT_ROUTINES = [
                 "difficulties": [dict(d) for d in GUILD_TASK_DIFFICULTIES],
             },
         ],
-    },
-    {
-        # Rift: junta Death Essence na versao NIGHTMARE das hunts marcadas, uma
-        # por vez (ve execute_dom_rift_step). Desligada por padrao.
-        "id": "rift_essence",
-        "name": "Rift: Death Essence",
-        "enabled": False,
-        "skip_when_training": True,
-        "trigger": {"mode": "interval", "seconds": 120},
-        "steps": [{"type": "dom_rift", "hunts": [dict(h) for h in RIFT_DEFAULT_HUNTS]}],
     },
     {
         "id": "bestiary_hunt",
@@ -1586,15 +1556,12 @@ def _ensure_passe_routine(routines):
     return True
 
 
-def _ensure_rift_routine(routines):
-    """routines.json antigo ganha a rotina do Rift (desligada) logo depois das
-    Tarefas da Guild. Retorna True se adicionou."""
-    if any(r.get("id") == "rift_essence" for r in routines):
-        return False
-    template = next(r for r in DEFAULT_ROUTINES if r["id"] == "rift_essence")
-    position = next((i + 1 for i, r in enumerate(routines) if r.get("id") == "tarefas_guild"), len(routines))
-    routines.insert(position, json.loads(json.dumps(template)))
-    return True
+def _drop_rift_routine(routines):
+    """A rotina 'Rift: Death Essence' (v4.26.0) saiu: agora a hunt principal ja
+    escolhe Normal/Nightmare/Hell. Remove ela do routines.json antigo."""
+    before = len(routines)
+    routines[:] = [r for r in routines if r.get("id") != "rift_essence"]
+    return len(routines) != before
 
 
 def load_routines():
@@ -1607,7 +1574,7 @@ def load_routines():
     changed = _ensure_campaign_routine(routines) or changed
     changed = _ensure_potion_routine(routines) or changed
     changed = _ensure_passe_routine(routines) or changed
-    changed = _ensure_rift_routine(routines) or changed
+    changed = _drop_rift_routine(routines) or changed
     if changed:
         save_routines(routines)
     return routines
@@ -3449,8 +3416,9 @@ def clear_hunt_search(page):
             page.wait_for_timeout(200)
     except Exception:
         pass  # filtro de categoria pode nao existir em todo lugar - nao trava por isso
-    # nivel da lista (Normal/Nightmare/Hell, atualizacao do Rift): o jogo lembra
-    # o ultimo escolhido - sem isso o bot entraria na versao Nightmare da hunt.
+    # nivel da lista (Normal/Nightmare/Hell): o jogo lembra o ultimo escolhido -
+    # sem isso o bot entraria na versao Nightmare sem querer. A hunt principal
+    # com nivel ('Nome · Nightmare') troca o nivel em find_and_go_to_hunt.
     select_hunt_tier(page, "normal")
 
 
@@ -3847,104 +3815,6 @@ def ensure_boss_slots(page, wanted, log):
         BOSS_SLOTS_MEMORY["slots"] = None
     finally:
         close_cyclopedia(page)
-
-
-def read_death_essence(page, log):
-    """Progressao > Rift: o botao 'Nightmare' mostra 'Nightmare 32 Death Essence
-    · na arvore: 5'. Retorna o TOTAL juntado (saldo + gasto na arvore - gastar
-    na arvore nao estraga a conta da hora) ou None."""
-    try:
-        page.click("#tab-progressao", timeout=UI_CLICK_TIMEOUT_MS)
-        page.click("#tab-rift", timeout=UI_CLICK_TIMEOUT_MS)
-        page.wait_for_selector(".rift-card .pick-leanbtn.tier.nm", timeout=10000)
-        text = page.text_content(".rift-card .pick-leanbtn.tier.nm") or ""
-        numbers = [int(n.replace(".", "")) for n in re.findall(r"\d[\d.]*", text)]
-        return sum(numbers[:2]) if numbers else None
-    except Exception as error:
-        if is_connection_dead_error(error):
-            raise
-        log(f"  Erro ao ler a Death Essence no Rift: {error}")
-        return None
-    finally:
-        try:
-            if page.is_visible(".rift-card .im-closebtn"):
-                page.click(".rift-card .im-closebtn", timeout=UI_CLICK_TIMEOUT_MS)
-            else:
-                page.keyboard.press("Escape")
-        except Exception:
-            pass
-
-
-def execute_dom_rift_step(page, step, log):
-    """Passo 'dom_rift': percorre as hunts marcadas (na ordem) na versao
-    NIGHTMARE juntando Death Essence. Em cada uma fica pelo menos 1h (tempo
-    DENTRO dela - chefes/passe/guild interrompem e nao contam); com 1h+ passa
-    pra proxima se juntou >= 85% do esperado/h, ou com 2h de qualquer jeito.
-    Lista acabou: volta pra hunt padrao."""
-    hunts = [h for h in step.get("hunts", []) if h.get("enabled")]
-    state = load_state()
-    rift = state.get("rift") or {}
-    names = [h["name"] for h in hunts]
-    done = [n for n in rift.get("done", []) if n in names]
-    pending = [h for h in hunts if h["name"] not in done]
-    if not pending:
-        if RIFT_MEMORY.get("target"):
-            RIFT_MEMORY["target"] = None
-            state["rift"] = {"done": []}
-            save_state(state)
-            log("  Rift: lista de hunts concluida - voltando pra hunt padrao.")
-            return_to_default_hunt(page, log, force=True)
-        return True
-    if task_grinding():
-        rift["last_tick"] = time.time()  # passe/guild na frente: esse tempo nao conta
-        state["rift"] = rift
-        save_state(state)
-        return True
-
-    hunt = next((h for h in pending if h["name"] == rift.get("current")), pending[0])
-    target = f"{hunt['name']} \u00b7 Nightmare"
-    RIFT_MEMORY["target"] = target
-    if rift.get("current") != hunt["name"]:
-        rift = {"done": done, "current": hunt["name"], "seconds": 0.0, "start": None, "last_tick": None}
-
-    try:
-        current = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
-    except Exception as error:
-        if is_connection_dead_error(error):
-            raise
-        return True
-    if split_hunt_tier(current) != (hunt["name"], "nm"):
-        rift["last_tick"] = None
-        state["rift"] = rift
-        save_state(state)
-        log(f"  Rift: indo pra '{target}' (meta {hunt['rate']} Death Essence/h)...")
-        find_and_go_to_hunt(page, target, "#wave-title", '.tp-opt[data-tp="hunts"]', ".stage-row",
-                            ".stage-name-line b", ".stage-go", log)
-        return True
-
-    now = time.time()
-    if rift.get("start") is None:
-        rift["start"] = read_death_essence(page, log)
-        rift["seconds"], rift["last_tick"] = 0.0, now
-        log(f"  Rift: cacando '{target}' - Death Essence agora: {rift['start']}.")
-    else:
-        if rift.get("last_tick"):
-            rift["seconds"] += min(now - rift["last_tick"], 600)
-        rift["last_tick"] = now
-        if rift["seconds"] >= RIFT_MIN_SECONDS:
-            total = read_death_essence(page, log)
-            if total is not None and rift["start"] is not None:
-                hours = rift["seconds"] / 3600
-                gained = max(0, total - rift["start"])
-                ratio = gained / (hunt["rate"] * hours) if hunt["rate"] else 1
-                if ratio >= RIFT_MIN_RATIO or rift["seconds"] >= RIFT_MAX_SECONDS:
-                    log(f"  Rift: '{hunt['name']}' rendeu {gained} Death Essence em {hours:.1f}h "
-                        f"({ratio:.0%} do esperado) - proxima hunt.")
-                    record_activity(f"Rift: {hunt['name']} - {gained} Death Essence em {hours:.1f}h.")
-                    rift = {"done": done + [hunt["name"]], "current": None}
-    state["rift"] = rift
-    save_state(state)
-    return True
 
 
 def run_between_fights_routines(page, stop_event, log, all_routines):
@@ -5196,7 +5066,7 @@ def finish_pass_grinding(page, log):
     de onde saiu) e libera o 'grinding'. Pede pra rotina da guild rodar ja -
     ordem: chefes > passe > tasks da guild."""
     DEFAULT_HUNT_MEMORY["name"] = load_settings().get("default_hunt", "")
-    target = CAMPAIGN_MEMORY.get("target_hunt") or RIFT_MEMORY.get("target") or DEFAULT_HUNT_MEMORY.get("name") or PASSE_MEMORY["previous_hunt"]
+    target = CAMPAIGN_MEMORY.get("target_hunt") or DEFAULT_HUNT_MEMORY.get("name") or PASSE_MEMORY["previous_hunt"]
     ok = True
     if target:
         log(f"  Missoes do passe concluidas - voltando para '{target}'...")
@@ -5570,7 +5440,7 @@ def execute_dom_guild_tasks_step(page, step, log):
         # DEFAULT_HUNT_MEMORY (bug real ja visto: caia no fallback errado).
         DEFAULT_HUNT_MEMORY["name"] = load_settings().get("default_hunt", "")
         target_hunt = (
-            CAMPAIGN_MEMORY.get("target_hunt") or RIFT_MEMORY.get("target") or DEFAULT_HUNT_MEMORY.get("name") or GUILD_TASK_MEMORY["previous_hunt"]
+            CAMPAIGN_MEMORY.get("target_hunt") or DEFAULT_HUNT_MEMORY.get("name") or GUILD_TASK_MEMORY["previous_hunt"]
         )
         log(f"  Tasks da guild selecionadas concluidas - voltando para '{target_hunt}'...")
         ok = find_and_go_to_hunt(
@@ -6086,8 +5956,8 @@ def execute_dom_hunt_bestiary_step(page, step, log):
     if not ADVANCE_MEMORY.get("enabled"):
         return True
 
-    if CAMPAIGN_MEMORY.get("target_hunt") or RIFT_MEMORY.get("target"):
-        return True  # a Campanha de Codex / o Rift decide pra qual hunt ir - sem avanco automatico competindo
+    if CAMPAIGN_MEMORY.get("target_hunt"):
+        return True  # a Campanha de Codex decide pra qual hunt ir - sem avanco automatico competindo
 
     if task_grinding():
         # tasks de guild tem prioridade maior que o avanco automatico de hunt
@@ -6812,7 +6682,7 @@ def return_to_default_hunt(page, log, force=False):
     DEFAULT_HUNT_MEMORY["name"] = load_settings().get("default_hunt", "")
     # a hunt do item atual da Campanha de Codex (se houver) vira a 'base' no
     # lugar da hunt padrao - e o avanco automatico nao compete com ela.
-    campaign_hunt = CAMPAIGN_MEMORY.get("target_hunt") or RIFT_MEMORY.get("target")  # Rift tambem e' 'base'
+    campaign_hunt = CAMPAIGN_MEMORY.get("target_hunt")
     default_hunt = campaign_hunt or DEFAULT_HUNT_MEMORY.get("name")
     if not default_hunt:
         return False
@@ -6976,8 +6846,6 @@ def execute_step(page, step, stop_event, log, all_routines=None):
         return execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=all_routines)
     if step_type == "dom_guild_tasks":
         return execute_dom_guild_tasks_step(page, step, log)
-    if step_type == "dom_rift":
-        return execute_dom_rift_step(page, step, log)
     if step_type == "dom_battlepass":
         return execute_dom_battlepass_step(page, step, log)
     if step_type == "dom_codex_campaign":

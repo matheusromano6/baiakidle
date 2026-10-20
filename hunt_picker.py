@@ -7,6 +7,9 @@ import theme
 FILTER_LABELS = ["Todas", "EXP", "LOOT", "Concluídas", "Pendentes"]
 
 
+TIERS = ["Normal", "Nightmare", "Hell"]
+
+
 class HuntPicker(ctk.CTkToplevel):
     """Escolhe a 'hunt padrao' - a fase pra onde o bot sempre volta quando
     termina tasks de guild, fica sem hunt ativa apos um chefe etc, e nao tem
@@ -28,7 +31,14 @@ class HuntPicker(ctk.CTkToplevel):
         self.focus_force()
 
         self.hunts = [dict(h) for h in hunts]  # [{"name","locked","level","lean","done","done_count"}]
-        self.selected_var = tk.StringVar(value=selected or "")
+        # a hunt principal pode ter nivel: 'Troll Cave · Nightmare' (igual o jogo
+        # mostra no topo) - separa o nome do nivel pra marcar os dois na tela.
+        base, tier = (selected or ""), "Normal"
+        for name in TIERS[1:]:
+            if base.endswith(f" · {name}"):
+                base, tier = base[: -len(f" · {name}")], name
+        self.selected_var = tk.StringVar(value=base)
+        self.tier_var = tk.StringVar(value=tier)
         self.filter_var = tk.StringVar(value="Todas")
 
         ctk.CTkLabel(
@@ -38,6 +48,16 @@ class HuntPicker(ctk.CTkToplevel):
             text_color=theme.MUTED,
             justify="left",
         ).pack(fill="x", padx=12, pady=(12, 6))
+        tier_row = ctk.CTkFrame(self, fg_color="transparent")
+        tier_row.pack(fill="x", padx=12, pady=(0, 6))
+        ctk.CTkLabel(tier_row, text="Nivel:", font=theme.FONT_BODY, text_color=theme.TEXT).pack(side="left")
+        ctk.CTkSegmentedButton(
+            tier_row, values=TIERS, variable=self.tier_var, fg_color=theme.PANEL_ALT, selected_color=theme.ACCENT,
+            selected_hover_color=theme.ACCENT_HOVER, unselected_color=theme.PANEL_ALT, text_color=theme.TEXT,
+        ).pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(
+            tier_row, text="(mais dificil = mais Death Essence)", font=theme.FONT_BODY, text_color=theme.MUTED,
+        ).pack(side="left", padx=(8, 0))
 
         top_row = ctk.CTkFrame(self, fg_color="transparent")
         top_row.pack(fill="x", padx=12, pady=(0, 6))
@@ -195,6 +215,9 @@ class HuntPicker(ctk.CTkToplevel):
             ).pack(anchor="w", padx=8, pady=8)
 
     def save(self):
+        name = self.selected_var.get()
+        if name and self.tier_var.get() != "Normal":
+            name = f"{name} · {self.tier_var.get()}"
         if self.on_saved:
-            self.on_saved(self.selected_var.get())
+            self.on_saved(name)
         self.destroy()
