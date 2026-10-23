@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.27.0"
+VERSION = "4.27.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -685,6 +685,36 @@ def is_debug_port_open():
         return False
 
 
+def _debug_port_has_page():
+    try:
+        with urllib.request.urlopen(f"{cdp_url()}/json/list", timeout=2) as response:
+            targets = json.load(response)
+        return any(target.get("type") == "page" for target in targets)
+    except Exception:
+        return True  # na duvida, trata como navegador em uso (nao encerra nada)
+
+
+def _kill_profile_browser(profile_dir):
+    """Encerra (arvore inteira) o navegador aberto com este --user-data-dir.
+    So Windows; nunca usar com o IdleDeck (ver nota abaixo)."""
+    if platform.system() != "Windows":
+        return
+    script = (
+        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+        "$_.CommandLine -like '*--remote-debugging-port*' -and "
+        f"$_.CommandLine -like '*{profile_dir}*' }} | "
+        "ForEach-Object { taskkill /PID $_.ProcessId /T /F | Out-Null }"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    deadline = time.monotonic() + 10
+    while is_debug_port_open() and time.monotonic() < deadline:
+        time.sleep(0.5)
+
+
 def mark_chrome_profile_clean(profile_dir):
     """Edita a 'Preferences' do perfil dedicado do Chrome marcando a ultima
     sessao como fechada normalmente. Sem isso, depois de qualquer fechamento
@@ -933,8 +963,14 @@ def launch_browser(log=print):
     if launcher == "idledeck_copy":
         return launch_idledeck_copy(log)
     if is_debug_port_open():
-        log(f"{label} ja esta com a depuracao remota ativa.")
-        return True
+        if _debug_port_has_page():
+            log(f"{label} ja esta com a depuracao remota ativa.")
+            return True
+        # janela fechada mas o processo seguiu vivo (com --remote-debugging-port o
+        # navegador nao encerra sozinho): sobra um "fantasma" sem aba, comendo
+        # memoria e segurando a porta. Encerra e abre um novo.
+        log(f"{label} ficou aberto em segundo plano sem janela - encerrando...")
+        _kill_profile_browser(profile_dir())
 
     browser_path = find_browser_executable()
     if not browser_path:

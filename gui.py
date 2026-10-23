@@ -1792,6 +1792,9 @@ class BotGUI:
         self.stop_event.set()
         self.pause_event.clear()
         self.stop_tray_icon()
+        if self.current_profile == "brave":
+            # com a depuracao remota o Brave nao encerra sozinho e ficaria acumulando processos
+            bot._kill_profile_browser(bot.profile_dir())
         self.root.destroy()
 
 
