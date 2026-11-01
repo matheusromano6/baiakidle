@@ -112,6 +112,11 @@ HUNT_CHECK_INTERVAL_SECONDS = 30  # de quanto em quanto tempo 'ensure_active_hun
 # processo do Chrome pode passar de 2GB numa unica aba. Um reload periodico
 # devolve a aba ao consumo de memoria de uma sessao recem-aberta.
 PAGE_RELOAD_INTERVAL_SECONDS = 1 * 3600  # de quanto em quanto tempo recarrega a pagina do jogo pra liberar memoria
+# O reload acima nao devolve a memoria das imagens/graficos/anuncios (medido em
+# 30/10: heap JS da aba 55MB, processo da aba 2,7GB). Ultimo recurso: passando
+# do limite, fecha o navegador inteiro e o laco de reconexao abre um novo.
+BROWSER_MEMORY_CHECK_SECONDS = 5 * 60
+BROWSER_RESTART_MB = 4000
 # Tempo que o Mercado/leilao pode ficar aberto antes do bot fechar sozinho
 # (ver dismiss_blocking_overlays) - da pro usuario usar ele na hora sem ser
 # expulso; so fecha se ficar aberto continuamente mais que isso (sinal de
@@ -131,6 +136,7 @@ BOSS_RETRY_SECONDS = 60  # se o horario calculado chegar e AINDA nao tiver ningu
 # bem no momento mais valioso: a estimativa calculada podia vencer segundos ANTES
 # da recarga de meia-noite baterem de verdade, entrar no modo de retentativa e so
 # tentar de novo minutos depois dos chefes ja estarem prontos no jogo.)
+BOSS_CHARGES_RECHECK_SECONDS = 60 * 60  # marcado sem lutar hoje (faltou carga de boss): reconfere nesse ritmo
 
 # Memoria compartilhada entre o passo que manda pro treino e o que volta a cacar:
 # guarda qual hunt estava ativa antes de treinar, pra saber aonde voltar depois.
@@ -692,6 +698,27 @@ def _debug_port_has_page():
         return any(target.get("type") == "page" for target in targets)
     except Exception:
         return True  # na duvida, trata como navegador em uso (nao encerra nada)
+
+
+def profile_browser_memory_mb(profile_dir):
+    """Soma a memoria (MB) de todos os processos do navegador aberto com este
+    --user-data-dir. So Windows; fora dele (ou em erro) devolve 0."""
+    if platform.system() != "Windows":
+        return 0
+    script = (
+        "(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+        f"$_.CommandLine -like '*{profile_dir}*' }} | "
+        "Measure-Object WorkingSetSize -Sum).Sum / 1MB"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return int(float(result.stdout.strip().replace(",", ".") or 0))
+    except Exception:
+        return 0
 
 
 def _kill_profile_browser(profile_dir):
@@ -4131,6 +4158,16 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         # como tempo de espera exato - em vez de chutar 13h fixo.
         status_selector = step.get("status_selector", ".boss-cell-status.cd")
         wait_seconds = None
+        # desde 26/10 o jogo tem 'Cargas de boss' diarias: acabando, o filtro
+        # 'Prontos' esconde todo mundo. Marcado SEM recarga = parado por falta de
+        # carga (nao lutou hoje) - as cargas podem voltar no meio do dia
+        # (Boss Pass, VIP, mudanca do jogo), entao nao espera as ~23h da recarga.
+        waiting_charges = []
+        charges_text = ""
+        try:
+            charges_text = (page.text_content(".boss-global b", timeout=UI_CLICK_TIMEOUT_MS) or "").strip()
+        except Exception:
+            pass
         try:
             ready_class_now = page.eval_on_selector(ready_selector, "el => el.className") or ""
             if "on" in ready_class_now.split():
@@ -4148,6 +4185,8 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
             )
             remaining = []
             for row_data in rows_data:
+                if row_data["name"] in enabled_names and not row_data["status"]:
+                    waiting_charges.append(row_data["name"])
                 if row_data["name"] not in enabled_names or not row_data["status"]:
                     continue
                 parsed = parse_cooldown_text(row_data["status"])
@@ -4181,6 +4220,11 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         else:
             if wait_seconds is None:
                 wait_seconds = BOSS_COOLDOWN_SECONDS  # nao deu pra ler (ex: 'Sem cargas') - cai no chute de seguranca
+            if waiting_charges and wait_seconds > BOSS_CHARGES_RECHECK_SECONDS:
+                log(f"  Cargas de boss: {charges_text or '?'} - {len(waiting_charges)} marcado(s) sem lutar hoje "
+                    f"(ex: {', '.join(waiting_charges[:3])}); confiro de novo em {BOSS_CHARGES_RECHECK_SECONDS // 60}min.")
+                wait_seconds = BOSS_CHARGES_RECHECK_SECONDS
+                had_real_estimate = False  # nao e recarga lida - sem modo de retentativa curta
             if not amulet_blocked:
                 log(f"  Nenhum chefe marcado esta pronto - proxima consulta em ~{wait_seconds / 3600:.1f}h.")
             # guarda o horario real (sem a margem) pra GUI exibir igual ao jogo -
@@ -7146,6 +7190,7 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                 last_run = {routine["id"]: 0.0 for routine in routines}
                 next_hunt_check = 0.0
                 next_page_reload = time.monotonic() + PAGE_RELOAD_INTERVAL_SECONDS
+                next_memory_check = time.monotonic() + 60  # 1a vez cedo: pega logo a aba duplicada
                 while not stop_event.is_set():
                     if pause_event.is_set():
                         stop_event.wait(TICK_SECONDS)
@@ -7253,6 +7298,22 @@ def run(stop_event, flags, routines, log=print, pause_event=None):
                                     raise
                                 log(f"Erro ao recarregar a pagina do jogo: {error}")
                             next_page_reload = time.monotonic() + PAGE_RELOAD_INTERVAL_SECONDS
+
+                    # IdleDeck fica de fora: nunca encerrar ele a forca (ver nota do IdleDeck)
+                    if now >= next_memory_check and not BROWSER_PROFILES[CURRENT_PROFILE].get("launcher"):
+                        next_memory_check = now + BROWSER_MEMORY_CHECK_SECONDS
+                        # depois de um reinicio o navegador restaura as abas antigas E abre a
+                        # do jogo de novo: fecha as copias do jogo (mesma conta em 2 abas)
+                        for other in page.context.pages:
+                            if other is not page and GAME_URL_PATTERN in other.url:
+                                log("Fechando aba duplicada do jogo...")
+                                other.close()
+                        if not (task_grinding() or TRAINING_MEMORY.get("waiting")):
+                            memory_mb = profile_browser_memory_mb(profile_dir())
+                            if memory_mb > BROWSER_RESTART_MB:
+                                log(f"Navegador usando {memory_mb} MB (limite {BROWSER_RESTART_MB} MB) - reiniciando o navegador...")
+                                _kill_profile_browser(profile_dir())
+                                raise RuntimeError("navegador reiniciado para liberar memoria")
 
                     for routine in routines:
                         flag = flags.get(routine["id"])
