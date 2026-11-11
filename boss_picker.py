@@ -5,6 +5,8 @@ import customtkinter as ctk
 
 import theme
 
+BOSS_DIFFICULTY_CHOICES = ["Padrão", "Máx"] + [str(n) for n in range(1, 21)]
+
 IMPORT_TOOLTIP_TEXT = (
     "Importa um arquivo .txt com um chefe por linha, na ordem que devem\n"
     "ser enfrentados - o bot escolhe o PRIMEIRO da lista que estiver\n"
@@ -223,6 +225,28 @@ class BossPicker(ctk.CTkToplevel):
                 width=1,
             )
             ss_check.pack(side="right")
+            # 'difficulty': nivel desse chefe - None = a dificuldade geral (fim
+            # da janela), "max" = a maior liberada, numero = esse nivel.
+            diff = boss.get("difficulty")
+            diff_var = tk.StringVar(value="Máx" if diff == "max" else (str(diff) if diff else "Padrão"))
+            diff_var.trace_add(
+                "write",
+                lambda *_, b=boss, v=diff_var: b.__setitem__(
+                    "difficulty", {"Padrão": None, "Máx": "max"}.get(v.get(), v.get().isdigit() and int(v.get()) or None)
+                ),
+            )
+            diff_menu = ctk.CTkOptionMenu(
+                row, variable=diff_var, values=BOSS_DIFFICULTY_CHOICES, width=80,
+                fg_color=theme.PANEL_ALT, button_color=theme.PANEL_ALT, text_color=theme.TEXT, font=theme.FONT_BODY,
+            )
+            diff_menu.pack(side="right", padx=(0, 8))
+            _Tooltip(
+                diff_menu,
+                "Nivel desse chefe:\n"
+                "Padrão = a dificuldade geral (fim desta janela)\n"
+                "Máx = sempre o maior nivel liberado\n"
+                "Numero = esse nivel (se ainda nao liberado, usa o maior liberado)",
+            )
             # 'boss_slot': antes de enfrentar esse chefe o bot coloca ele num dos
             # 2 Boss Slots (Cyclopedia) - mais chance de loot. So' os marcados
             # aqui, porque cada troca de slot fica mais cara no dia.

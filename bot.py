@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.28.0"
+VERSION = "4.29.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -173,9 +173,8 @@ BOSS_AMULET_MEMORY = {"changed": {}, "verified": False, "revert_fails": 0}
 # cair na espera longa de cooldown.
 BOSS_AMULET_RETRY_SECONDS = 180
 
-# Placar de vitorias por chefe ({nome: kills}), lido direto do Bosstiary
-# (Cyclopedia > Bosstiary - o proprio jogo ja conta certinho, nao precisa o
-# bot adivinhar se um combate foi vitoria ou derrota). Usado pra mostrar na
+# Placar de vitorias por chefe ({nome: kills}), lido do title das linhas da
+# lista de Chefes (ver read_boss_list_kills - o proprio jogo ja conta certinho). Usado pra mostrar na
 # tela de escolha de chefes, ajudando o usuario a decidir manter ou tirar um
 # chefe da lista pela eficiencia real.
 BOSS_KILLS_MEMORY = {}
@@ -1833,6 +1832,16 @@ def execute_dom_click_step(page, step, stop_event, log):
             reason = str(retry_error).splitlines()[0][:120]
             log(f"'{label}' nao encontrado ({reason}).")
             return False
+    # abas com submenu ('Progressao', 'Comercio'...) abrem por hover E alternam no
+    # clique: o hover do proprio clique abria e o clique fechava, e o passo
+    # seguinte ('Codex') falhava com 'not visible' (visto ao vivo em 11/11).
+    try:
+        page.wait_for_timeout(300)
+        if page.eval_on_selector(selector, "el => el.classList.contains('tab-group-trigger') && el.getAttribute('aria-expanded') === 'false'"):
+            page.click(selector, timeout=timeout_ms, force=True)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
     log(f"'{label}' clicado.")
     LAST_ACTION_MEMORY[label] = time.time()
     click_confirm()
@@ -2744,7 +2753,7 @@ def execute_dom_codex_campaign_step(page, step, log):
     target_hunt = CAMPAIGN_MEMORY["target_hunt"]
     if target_hunt:
         try:
-            current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+            current_hunt = (page.eval_on_selector("#wave-title", WAVE_TITLE_JS) or "").strip()
         except Exception:
             current_hunt = target_hunt
         if current_hunt == target_hunt:
@@ -3446,6 +3455,11 @@ def click_open_wave(page, open_selector, timeout=3000):
     clique normal primeiro (mais seguro) e so forca (ignora a checagem de
     sobreposicao) se esse falhar - se as duas tentativas falharem, quem
     chamou continua tratando a excecao normalmente (ex: log de erro)."""
+    if page.is_visible("#picker-modal"):
+        # lista de Hunts/Chefes ja aberta: o clique no pill nao abre o menu de
+        # Teleportes por cima dela e o '.tp-opt' nunca aparecia (timeout).
+        page.click("#picker-modal-close", timeout=timeout)
+        page.wait_for_timeout(300)
     try:
         page.click(open_selector, timeout=timeout)
     except Exception:
@@ -3490,6 +3504,16 @@ HUNT_TIER_BUTTONS = {
     "nm": "#picker-modal .pick-leanbtn.tier.nm",
     "hl": "#picker-modal .pick-leanbtn.tier.hl",
 }
+
+
+# Desde a atualizacao de 11/11 o '#wave-title' mostra so o nome ('Hideous Fungus')
+# e o nivel foi pro atributo data-kind ('Hunt · Nightmare'); remonta 'Nome · Nightmare'
+# pra todo o resto do bot (split_hunt_tier, hunt padrao) continuar igual.
+WAVE_TITLE_JS = r"""el => {
+    const t = (el.textContent || '').trim();
+    const m = /·\s*(Nightmare|Hell)\s*$/i.exec(el.dataset.kind || '');
+    return m && !/(Nightmare|Hell)\s*$/i.test(t) ? t + ' · ' + m[1] : t;
+}"""
 
 
 def split_hunt_tier(name):
@@ -3682,40 +3706,19 @@ def parse_cooldown_text(text):
     return hours * 3600 + minutes * 60
 
 
-def read_bosstiary_kills(page, log):
-    """Le o placar de vitorias (kills) de cada chefe no Bosstiary (Cyclopedia >
-    Bosstiary) e atualiza BOSS_KILLS_MEMORY - o jogo ja conta certinho, entao o
-    bot nao precisa adivinhar se um combate foi vitoria ou derrota.
-
-    Le tudo numa UNICA chamada (page.evaluate), nao com query_selector +
-    text_content por celula (a lista tem varias dezenas de chefes - cada
-    leitura separada e uma ida-e-volta pelo protocolo de depuracao; somadas,
-    isso segurava essa tela aberta por vários segundos so pra ler o placar)."""
-    try:
-        page.click("#tab-cyclopedia", timeout=UI_CLICK_TIMEOUT_MS)
-        tab_class = page.eval_on_selector('.cyc-tabbtn[data-tab="bosstiary"]', "el => el.className") or ""
-        if "on" not in tab_class.split():
-            page.click('.cyc-tabbtn[data-tab="bosstiary"]', timeout=UI_CLICK_TIMEOUT_MS)
-        page.wait_for_selector(".cyc-bosscell", timeout=4000)
-    except Exception as error:
-        log(f"  Erro ao abrir Cyclopedia/Bosstiary: {error}")
-        return
-
-    cells = page.evaluate(
-        """() => Array.from(document.querySelectorAll('.cyc-bosscell')).map(cell => ({
-            name: cell.querySelector('.cyc-cell-name')?.textContent?.trim() || '',
-            sub: cell.querySelector('.cyc-cell-sub')?.textContent?.trim() || '',
-        }))"""
+def read_boss_list_kills(page, row_selector):
+    """Atualiza BOSS_KILLS_MEMORY pelo title das linhas da lista de Chefes ja
+    aberta ('Shadowpelt · 19 vitórias'). Antes lia do Bosstiary, mas desde a
+    atualizacao de 11/11 ele mostra '22 / 60' em vez das kills: o placar ficava
+    vazio e o bot reabria a Cyclopedia a cada rodada de chefes."""
+    titles = page.evaluate(
+        "sel => Array.from(document.querySelectorAll(sel)).map(row => row.getAttribute('title') || '')",
+        row_selector,
     )
-    for cell in cells:
-        match = re.search(r"([\d.]+)\s*kill", cell["sub"])
-        if cell["name"] and match:
-            BOSS_KILLS_MEMORY[cell["name"]] = int(match.group(1).replace(".", ""))
-
-    try:
-        page.click("#cyclopedia-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
-    except Exception:
-        page.keyboard.press("Escape")
+    for title in titles:
+        match = re.match(r"^(.*?)\s*·\s*([\d.]+)\s*(?:vit|kill)", title)
+        if match:
+            BOSS_KILLS_MEMORY[match.group(1).strip()] = int(match.group(2).replace(".", ""))
 
 
 # ---------- Boss Slots (Cyclopedia > Boss Slots) ----------
@@ -3944,11 +3947,6 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
     if not enabled_names:
         return True
 
-    if not BOSS_KILLS_MEMORY:
-        # primeira vez que esta rotina roda nesta sessao - pega o placar
-        # historico completo pra ja aparecer na tela de escolha de chefes.
-        read_bosstiary_kills(page, log)
-
     if time.monotonic() < BOSS_MEMORY["next_check"]:
         return True  # lista esgotada recentemente, ainda dentro da recarga - nao vale consultar
 
@@ -3999,6 +3997,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         # esse chefe como alvo, o clique em 'Enfrentar' sempre falhava (timeout)
         # e a rotina inteira era interrompida e reiniciada do zero a cada ciclo -
         # travado tentando o mesmo chefe pra sempre.
+        read_boss_list_kills(page, row_selector)
         ready_names = set(
             page.evaluate(
                 """([rowSel, nameSel, goSel]) => Array.from(document.querySelectorAll(rowSel)).filter(
@@ -4012,6 +4011,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         )
 
         target_name = None
+        target_difficulty = None
         target_needs_stone_skin = False
         target_in_slot = False  # o usuario marcou 'Slot' (BossPicker) pra esse chefe
         next_name = None  # o proximo chefe da fila marcado 'Slot' (adianta ele no outro slot)
@@ -4021,6 +4021,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                     continue  # sem Stone Skin confirmado NAO enfrenta (pode matar os chares)
                 if target_name is None:
                     target_name = boss["name"]
+                    target_difficulty = boss.get("difficulty")
                     target_needs_stone_skin = bool(boss.get("stone_skin"))
                     target_in_slot = bool(boss.get("boss_slot"))
                     continue
@@ -4122,11 +4123,11 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                         return False
             if sequence_started is None:
                 sequence_started = time.monotonic()
-            fought = fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector)
+            fought = fight_one_boss(
+                page, stop_event, log, target_name, row_selector, name_selector, go_selector, target_difficulty
+            )
             if not fought:
                 restore_boss_amulet(page, log)
-                if fought_any:
-                    read_bosstiary_kills(page, log)
                 return False
             fought_any = True
             fights += 1
@@ -4176,6 +4177,7 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
             # le nome + status de TODAS as linhas numa unica chamada (mesmo
             # motivo do resto dessa funcao - dezenas de chefes, cada leitura
             # separada e uma ida-e-volta pelo protocolo de depuracao).
+            read_boss_list_kills(page, row_selector)
             rows_data = page.evaluate(
                 """([rowSel, nameSel, statusSel]) => Array.from(document.querySelectorAll(rowSel)).map(row => ({
                     name: row.querySelector(nameSel)?.textContent?.trim() || '',
@@ -4247,12 +4249,6 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
         # que foi trocado pro Stone Skin, uma unica vez pra sequencia inteira.
         restore_boss_amulet(page, log)
         if fought_any:
-            # atualiza o placar (Bosstiary) UMA VEZ so, depois de todos os
-            # combates dessa chamada - nao a cada chefe (evita reabrir o
-            # painel pesado do Bosstiary varias vezes seguidas). So agora,
-            # com o painel de Chefes ja fechado (recover acima), porque
-            # abrir o Bosstiary navega pra outra tela e fecharia ele mesmo.
-            read_bosstiary_kills(page, log)
             if not task_grinding():
                 # chefes sao a interrupcao de maior prioridade - ao
                 # terminar TODOS os prontos, volta pra hunt padrao (a
@@ -4264,10 +4260,12 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
 
     restore_boss_amulet(page, log)
     if fought_any:
-        read_bosstiary_kills(page, log)
         if not task_grinding():
             return_to_default_hunt(page, log, force=True)
     return True
+
+
+BOSS_DIFFICULTY_MAX = 999  # "Max" no BossPicker: sobe as setas ate desabilitarem
 
 
 def boss_difficulty_config():
@@ -4279,11 +4277,13 @@ def boss_difficulty_config():
         return 1
 
 
-def confirm_boss_difficulty(page, log):
+def confirm_boss_difficulty(page, log, boss_difficulty=None):
     """Atualizacao de 18/10: depois de 'Enfrentar' o jogo abre 'Dificuldade do
     boss' ('#confirm-modal .bdiff', valor em '.bdiff-value', setas
     '.bdiff-dir-prev/-next' - desabilitadas no limite) e so luta com 'Iniciar
     luta' ('#confirm-yes'). Ajusta pra dificuldade configurada e confirma.
+    'boss_difficulty' (BossPicker, por chefe): None = a dificuldade geral,
+    "max" = a maior liberada, numero = esse nivel (acima do liberado, a maior).
     Retorna o nivel usado, None se a tela nao apareceu (luta direta, jeito
     antigo) ou False se nao conseguiu confirmar."""
     try:
@@ -4292,8 +4292,12 @@ def confirm_boss_difficulty(page, log):
         if is_connection_dead_error(error):
             raise
         return None
-    target = boss_difficulty_config()
+    use_max = boss_difficulty == "max"
+    target = BOSS_DIFFICULTY_MAX if use_max else (boss_difficulty or boss_difficulty_config())
     try:
+        if use_max and not page.is_disabled("#confirm-modal .bdiff-dir-last"):
+            page.click("#confirm-modal .bdiff-dir-last", timeout=UI_CLICK_TIMEOUT_MS)  # '»' = maior liberada
+            time.sleep(0.2)
         for _ in range(60):
             current = int(re.sub(r"\D", "", page.text_content("#confirm-modal .bdiff-value") or "") or 0)
             if current == target:
@@ -4304,7 +4308,7 @@ def confirm_boss_difficulty(page, log):
             page.click(arrow, timeout=UI_CLICK_TIMEOUT_MS)
             time.sleep(0.2)
         level = int(re.sub(r"\D", "", page.text_content("#confirm-modal .bdiff-value") or "") or 0)
-        if level != target:
+        if level != target and not use_max:
             log_once(f"boss-dif-{target}-{level}", f"  Dificuldade {target} ainda nao liberada - usando {level}.", log)
         page.click("#confirm-yes", timeout=UI_CLICK_TIMEOUT_MS)
         return level
@@ -4319,7 +4323,7 @@ def confirm_boss_difficulty(page, log):
         return False
 
 
-def fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector):
+def fight_one_boss(page, stop_event, log, target_name, row_selector, name_selector, go_selector, boss_difficulty=None):
     """Enfrenta UM chefe especifico (ja confirmado pronto pelo chamador) e
     espera o combate de verdade acontecer (barra de vida aparecer e sumir).
     Retorna True se o combate rolou (vitoria ou derrota, tanto faz - o
@@ -4353,7 +4357,7 @@ def fight_one_boss(page, stop_event, log, target_name, row_selector, name_select
     except Exception as error:
         log(f"  Erro ao clicar 'Enfrentar' em '{target_name}': {error}")
         return False
-    level = confirm_boss_difficulty(page, log)
+    level = confirm_boss_difficulty(page, log, boss_difficulty)
     if level is False:
         return False
     log(f"  Enfrentando '{target_name}'" + (f" (dificuldade {level})" if level else "") + "...")
@@ -5092,7 +5096,7 @@ def go_to_pass_hunt(page, name, state, log):
             break
 
     try:
-        current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+        current_hunt = (page.eval_on_selector("#wave-title", WAVE_TITLE_JS) or "").strip()
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -5127,7 +5131,7 @@ def go_to_pass_hunt(page, name, state, log):
     for _ in range(10):
         time.sleep(0.5)
         try:
-            now_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+            now_hunt = (page.eval_on_selector("#wave-title", WAVE_TITLE_JS) or "").strip()
         except Exception as error:
             if is_connection_dead_error(error):
                 raise
@@ -5275,7 +5279,7 @@ def execute_dom_guild_tasks_step(page, step, log):
     go_selector = step.get("go_selector", ".stage-go")
 
     try:
-        current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+        current_hunt = (page.eval_on_selector("#wave-title", WAVE_TITLE_JS) or "").strip()
     except Exception:
         current_hunt = ""
 
@@ -5941,7 +5945,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
     hunt disponivel da lista - so avanca (e so ENTAO essa vira a nova hunt
     padrao) se ele confirmar."""
     try:
-        current_hunt = split_hunt_tier(hunt_name_or_empty(page.eval_on_selector("#wave-title", "el => el.textContent")))[0]
+        current_hunt = split_hunt_tier(hunt_name_or_empty(page.eval_on_selector("#wave-title", WAVE_TITLE_JS)))[0]
     except Exception:
         return True
 
@@ -5995,7 +5999,7 @@ def execute_dom_hunt_bestiary_step(page, step, log):
         if not started:
             return True
         try:
-            current_hunt = split_hunt_tier(hunt_name_or_empty(page.eval_on_selector("#wave-title", "el => el.textContent")))[0]
+            current_hunt = split_hunt_tier(hunt_name_or_empty(page.eval_on_selector("#wave-title", WAVE_TITLE_JS)))[0]
         except Exception:
             return True
         if not current_hunt:
@@ -6776,7 +6780,7 @@ def return_to_default_hunt(page, log, force=False):
         return True
 
     try:
-        current_hunt = (page.eval_on_selector("#wave-title", "el => el.textContent") or "").strip()
+        current_hunt = (page.eval_on_selector("#wave-title", WAVE_TITLE_JS) or "").strip()
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -6864,7 +6868,7 @@ def ensure_active_hunt(page, log):
         PASSE_MEMORY["grinding_since"] = None
 
     try:
-        current_hunt = hunt_name_or_empty(page.eval_on_selector("#wave-title", "el => el.textContent"))
+        current_hunt = hunt_name_or_empty(page.eval_on_selector("#wave-title", WAVE_TITLE_JS))
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -7121,14 +7125,31 @@ def reload_game_page(page, log):
                 pass
 
 
+MODAL_CLOSE_BUTTONS = ("#picker-modal-close", "#cyclopedia-modal-close", "#codex-modal-close")
+
+
 def recover(page, log):
     """Fecha qualquer menu/painel que possa ter ficado aberto (ex: uma rotina anterior
     parou no meio, com um menu de contexto ou popup ainda na tela). Roda ao conectar
     e depois de qualquer erro, pra garantir que o proximo ciclo comece limpo."""
     log("Fechando janelas/menus abertos, se houver...")
+    # com o foco num campo (ex: busca da lista de Hunts) o Escape nao fecha nada -
+    # visto ao vivo em 11/11: lista de Hunts + Cyclopedia presas abertas por 40min.
+    try:
+        page.evaluate("() => document.activeElement && document.activeElement.blur()")
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
     for _ in range(3):
         page.keyboard.press("Escape")
         time.sleep(0.3)
+    for selector in MODAL_CLOSE_BUTTONS:
+        try:
+            if page.is_visible(selector):
+                page.click(selector, timeout=UI_CLICK_TIMEOUT_MS)
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
 
 
 def test_routine_once(routine, log=print):
