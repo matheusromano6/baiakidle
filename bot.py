@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.29.0"
+VERSION = "4.29.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -3426,7 +3426,7 @@ def execute_dom_threshold_click_step(page, step, log):
         # Guarda o que estava na tela (ex: nome da hunt atual) antes de trocar
         # de modo, pra 'Voltar a cacar' saber pra onde voltar depois.
         try:
-            hunt_name = page.eval_on_selector(remember_selector, "el => el.textContent")
+            hunt_name = page.eval_on_selector(remember_selector, WAVE_TITLE_JS)  # com o nivel (Nightmare/Hell)
             TRAINING_MEMORY["hunt_name"] = (hunt_name or "").strip()
             TRAINING_MEMORY["waiting"] = True
         except Exception:
@@ -3583,6 +3583,8 @@ def find_and_go_to_hunt(page, hunt_name, open_selector, hunts_selector, row_sele
         result = click_hunt_go(page, base_name, row_selector, name_selector, go_selector)
         if result == "active":
             log(f"  'Cacar' desabilitado para '{hunt_name}' - provavelmente ja e a fase ativa.")
+            if page.is_visible("#picker-modal"):
+                page.click("#picker-modal-close", timeout=UI_CLICK_TIMEOUT_MS)  # senao a lista fica por cima de tudo
             return True
         log(f"  'Cacar' clicado em '{hunt_name}'.")
     except Exception as error:
@@ -3604,7 +3606,11 @@ def click_hunt_go(page, hunt_name, row_selector, name_selector, go_selector):
     go_button = row.locator(go_selector).first
     if not go_button.is_visible():
         row.scroll_into_view_if_needed(timeout=3000)
-        row.click(timeout=UI_CLICK_TIMEOUT_MS)
+        if "expanded" not in (row.get_attribute("class") or "").split():
+            row.click(timeout=UI_CLICK_TIMEOUT_MS)
+        # desde 12/11 o 'Caçar' do cartao fica escondido: o visivel e o do painel
+        # unico da hunt selecionada ('.hunt-sel .stage-detail'), fora do cartao.
+        go_button = page.locator(f"{row_selector}.expanded {go_selector}:visible, .hunt-sel .stage-actions {go_selector}").first
         go_button.wait_for(state="visible", timeout=4000)
     if not go_button.is_enabled():
         return "active"
@@ -3613,39 +3619,60 @@ def click_hunt_go(page, hunt_name, row_selector, name_selector, go_selector):
 
 
 def match_hunt_by_monsters(page, monster_names, row_selector, name_selector, mobs_selector):
-    """Percorre a lista de Hunts (ja aberta) e acha a fase cujos monstros
-    (texto de '.stage-mobs') tem mais nomes em comum com 'monster_names' (ex:
-    os monstros pedidos por uma task da guild). Retorna (nome_da_fase,
-    elemento_da_linha) do melhor resultado, ou (None, None) se nenhuma fase
-    tiver algum monstro em comum."""
-    wanted = {name.strip().lower() for name in monster_names if name.strip()}
+    """Com a lista de Hunts aberta, acha a fase com mais monstros em comum com
+    'monster_names' (ex: os monstros pedidos por uma task da guild). Desde 12/11
+    os cartoes nao trazem mais a lista de monstros ('mobs_selector' ficou sem
+    uso): busca cada monstro no campo '.pick-search' ('Buscar fase ou
+    monstro...') e conta em quais fases ele aparece. A hunt ativa aparece em
+    TODA busca, entao ela e conferida pelo painel de detalhes. Retorna
+    (nome_da_fase, elemento_da_linha) do melhor resultado, ou (None, None) se
+    nenhuma fase tiver algum monstro em comum."""
+    wanted = [name.strip() for name in monster_names if name.strip()]
     if not wanted:
         return None, None
 
-    # le nome + monstros de TODAS as linhas numa unica chamada (mesmo motivo
-    # de 'find_and_go_to_hunt' - a lista pode ter varias dezenas de fases, e
-    # aqui cada linha antes levava ATE 2 idas-e-voltas separadas).
-    rows_data = page.evaluate(
-        """([rowSel, nameSel, mobsSel]) => Array.from(document.querySelectorAll(rowSel)).map(row => ({
-            name: row.querySelector(nameSel)?.textContent?.trim() || '',
-            mobs: row.querySelector(mobsSel)?.textContent || '',
-        }))""",
-        [row_selector, name_selector, mobs_selector],
-    )
+    def search(text):
+        for _ in range(2):
+            page.fill(".pick-search", text, timeout=UI_CLICK_TIMEOUT_MS)
+            page.wait_for_timeout(800)  # a lista demora pra refiltrar (antes disso ainda mostra a anterior)
+            if page.input_value(".pick-search") == text:
+                break  # a lista se redesenhando logo apos abrir as vezes apaga o texto digitado
+        return page.evaluate(
+            """([rowSel, nameSel]) => Array.from(document.querySelectorAll(rowSel)).map(
+                row => row.querySelector(nameSel)?.textContent?.trim() || ''
+            ).filter(Boolean)""",
+            [row_selector, name_selector],
+        )
 
-    best_name, best_index, best_score = None, None, 0
-    for index, row_data in enumerate(rows_data):
-        mobs = {name.strip().lower() for name in row_data["mobs"].split(",") if name.strip()}
-        score = len(wanted & mobs)
-        if score > best_score and row_data["name"]:
-            best_name, best_index, best_score = row_data["name"], index, score
+    scores = {}
+    try:
+        pinned = set(search("#nenhuma-fase#"))
+        for monster in wanted:
+            for name in search(monster):
+                if name not in pinned:
+                    scores[name] = scores.get(name, 0) + 1
+        clear_hunt_search(page)
+        page.wait_for_timeout(800)
+        lowered = {m.lower() for m in wanted}
+        for name in pinned:
+            safe = name.replace('"', '\\"')
+            row = page.locator(f'{row_selector}:has({name_selector}:text-is("{safe}"))').first
+            if "expanded" not in (row.get_attribute("class") or "").split():
+                row.click(timeout=UI_CLICK_TIMEOUT_MS)
+                page.wait_for_timeout(400)
+            mobs = page.text_content(".hunt-sel .stage-detail .stage-mobs", timeout=UI_CLICK_TIMEOUT_MS) or ""
+            hits = len(lowered & {m.strip().lower() for m in mobs.split(",")})
+            if hits:
+                scores[name] = hits
+    finally:
+        clear_hunt_search(page)
 
-    if best_index is None:
+    if not scores:
         return None, None
-
-    rows = page.query_selector_all(row_selector)
-    best_row = rows[best_index] if best_index < len(rows) else None
-    return best_name, best_row
+    best_name = max(scores, key=scores.get)
+    safe_name = best_name.replace('"', '\\"')
+    best_row = page.query_selector(f'{row_selector}:has({name_selector}:text-is("{safe_name}"))')
+    return (best_name, best_row) if best_row else (None, None)
 
 
 def execute_dom_resume_hunt_step(page, step, log):
@@ -5514,6 +5541,8 @@ def execute_dom_guild_tasks_step(page, step, log):
                             log(f"  Trocando para a hunt '{hunt_name}' (task '{task_name}')...")
                     except Exception as error:
                         log(f"  Erro ao trocar para a hunt '{hunt_name}': {error}")
+            if page.is_visible("#picker-modal"):
+                page.click("#picker-modal-close", timeout=UI_CLICK_TIMEOUT_MS)  # ja na hunt / nao achou: nao deixa a lista por cima
     elif GUILD_TASK_MEMORY.get("grinding") and GUILD_TASK_MEMORY.get("previous_hunt"):
         # a hunt padrao escolhida pelo usuario (se configurada) tem
         # prioridade sobre 'a hunt de antes' - o objetivo e sempre acabar de
