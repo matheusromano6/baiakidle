@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.29.2"
+VERSION = "4.30.0"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -1412,38 +1412,14 @@ DEFAULT_ROUTINES = [
                 "label": "Esconder bloqueadas",
             },
             {
-                "type": "dom_ensure_active",
-                "selector": '.codex-side .codex-tab:has-text("Favoritos")',
-                "label": "Menu Favoritos",
-            },
-            {
-                "type": "dom_click",
-                "selector": ".cx-give:not([disabled]):visible",
-                "label": "Entregar (favoritos)",
-                "repeat": True,
-                "confirm_selector": "#confirm-yes",
-                "timeout": 3,
-                "force": True,
+                # tudo na aba Todas (com 'Entregaveis' ela ja inclui os
+                # favoritos), favoritos primeiro - ver execute_dom_codex_deliver_step.
+                "type": "dom_codex_deliver",
             },
             {
                 # fica de olho se a hunt favoritada completou 100% no Codex e
-                # toca um som de aviso - ja aproveita que a aba Favoritos esta
-                # aberta nesse ponto, nao precisa navegar de novo.
+                # toca um som de aviso.
                 "type": "dom_watch_favorite",
-            },
-            {
-                "type": "dom_ensure_active",
-                "selector": '.codex-side .codex-tab:has-text("Todas")',
-                "label": "Menu Todas",
-            },
-            {
-                "type": "dom_click",
-                "selector": ".cx-give:not([disabled]):visible",
-                "label": "Entregar",
-                "repeat": True,
-                "confirm_selector": "#confirm-yes",
-                "timeout": 3,
-                "force": True,
             },
             {"type": "dom_click", "selector": "#codex-modal-close", "label": "Fechar Codex", "timeout": 3},
             {
@@ -1565,6 +1541,21 @@ def _ensure_mandatory_vender_loot_steps(routines):
         return False
 
     changed = False
+    # v4.30.0: os 2 passes (aba Favoritos, depois aba Todas) viram um passo so
+    # na aba Todas - eram 2 trocas de aba (~2s cada com o navegador escondido)
+    # em TODA rodada, mesmo sem nada pra entregar.
+    old_delivery = [
+        i for i, s in enumerate(steps)
+        if (s.get("type") == "dom_ensure_active" and "codex-tab" in s.get("selector", ""))
+        or (s.get("type") == "dom_click" and s.get("selector", "").startswith(".cx-give"))
+    ]
+    if old_delivery:
+        first = old_delivery[0]
+        for i in reversed(old_delivery):
+            del steps[i]
+        if not any(s.get("type") == "dom_codex_deliver" for s in steps):
+            steps.insert(first, {"type": "dom_codex_deliver"})
+        changed = True
     insert_at = codex_idx + 1
     if not any(s.get("type") == "dom_clear_search" for s in steps):
         steps.insert(insert_at, {"type": "dom_clear_search", "selector": ".cx-search"})
@@ -1785,7 +1776,7 @@ def execute_dom_click_step(page, step, stop_event, log):
             log(f"  BLOQUEADO por seguranca: botao de confirmacao diz '{text}' - nao e a acao esperada, nao clicado.")
             return
         try:
-            confirm_el.click(timeout=timeout_ms)
+            confirm_el.click(timeout=timeout_ms, force=True)  # ja esperou ficar visivel acima
             log("  Confirmado.")
         except Exception:
             log("  Confirmacao nao apareceu.")
@@ -1813,8 +1804,20 @@ def execute_dom_click_step(page, step, stop_event, log):
             LAST_ACTION_MEMORY[label] = time.time()
         return True
 
+    # elemento ja visivel e habilitado (conferido numa leitura so): clica sem
+    # a checagem de 'parado na tela' do Playwright, que espera quadros de
+    # animacao - com o navegador escondido (~1 quadro/s) cada clique levava ~2s.
     try:
-        page.click(selector, timeout=timeout_ms, force=force)
+        ready = page.evaluate(
+            "sel => { const e = document.querySelector(sel); return !!e && !e.disabled && e.getBoundingClientRect().width > 0; }",
+            selector,
+        )
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        ready = False  # seletor so do Playwright (ex: ':visible') - caminho normal
+    try:
+        page.click(selector, timeout=timeout_ms, force=force or ready)
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -1836,9 +1839,10 @@ def execute_dom_click_step(page, step, stop_event, log):
     # clique: o hover do proprio clique abria e o clique fechava, e o passo
     # seguinte ('Codex') falhava com 'not visible' (visto ao vivo em 11/11).
     try:
-        page.wait_for_timeout(300)
-        if page.eval_on_selector(selector, "el => el.classList.contains('tab-group-trigger') && el.getAttribute('aria-expanded') === 'false'"):
-            page.click(selector, timeout=timeout_ms, force=True)
+        if page.eval_on_selector(selector, "el => el.classList.contains('tab-group-trigger')"):
+            page.wait_for_timeout(300)
+            if page.eval_on_selector(selector, "el => el.getAttribute('aria-expanded') === 'false'"):
+                page.click(selector, timeout=timeout_ms, force=True)
     except Exception as error:
         if is_connection_dead_error(error):
             raise
@@ -2110,6 +2114,68 @@ def play_achievement_sound():
             winsound.Beep(frequency, duration_ms)
     except Exception:
         pass
+
+
+# Proximo 'Entregar' do Codex numa leitura so: indice entre os botoes
+# habilitados e visiveis, preferindo entrada favoritada (estrela) - mesma
+# prioridade da antiga passada pela aba Favoritos, sem trocar de aba.
+CODEX_NEXT_GIVE_JS = r"""() => {
+    const gives = Array.from(document.querySelectorAll('.cx-entry .cx-give'))
+        .filter(b => !b.disabled && b.getBoundingClientRect().width > 0);
+    if (!gives.length) return -1;
+    const fav = gives.findIndex(b => b.closest('.cx-entry')?.querySelector('.cx-star')?.getAttribute('aria-pressed') === 'true');
+    return fav >= 0 ? fav : 0;
+}"""
+CODEX_GIVE_LOCATOR = ".cx-entry .cx-give:not([disabled]):visible"
+
+
+def execute_dom_codex_deliver_step(page, stop_event, log):
+    """Passo tipo 'dom_codex_deliver': entrega tudo que der no Codex ja aberto,
+    na aba 'Todas' (com o filtro 'Entregaveis' ela ja inclui os favoritos) e
+    com os favoritos primeiro. Substitui as 2 passadas antigas (aba
+    Favoritos, depois aba Todas), que trocavam de aba 2x por rodada.
+    Rapido com o navegador escondido: escolhe o botao numa leitura so, e
+    os cliques vao com force=True (a checagem de 'parado na tela' do
+    Playwright espera quadros de animacao, ~1/s escondido) - a visibilidade
+    ja foi conferida na leitura. Depois de confirmar, espera a confirmacao
+    fechar em vez de um tempo fixo."""
+    try:
+        tab = page.locator('.codex-side .codex-tab:has-text("Todas")').first
+        if "on" not in (tab.get_attribute("class") or "").split():
+            tab.click(timeout=UI_CLICK_TIMEOUT_MS, force=True)
+            page.wait_for_timeout(300)
+    except Exception as error:
+        if is_connection_dead_error(error):
+            raise
+        log(f"  Erro ao abrir a aba 'Todas' do Codex: {error}")
+        return False
+
+    clicks = 0
+    deadline = time.monotonic() + MAX_REPEAT_SECONDS
+    while clicks < MAX_REPEAT_CLICKS and time.monotonic() < deadline and not stop_event.is_set():
+        index = page.evaluate(CODEX_NEXT_GIVE_JS)
+        if index < 0:
+            break
+        try:
+            page.locator(CODEX_GIVE_LOCATOR).nth(index).click(timeout=UI_CLICK_TIMEOUT_MS, force=True)
+            confirm = page.wait_for_selector("#confirm-yes", state="visible", timeout=3000)
+            text = (confirm.text_content() or "").strip()
+            if any(word in text.lower() for word in DANGEROUS_CONFIRM_KEYWORDS):
+                log(f"  BLOQUEADO por seguranca: botao de confirmacao diz '{text}' - nao e a acao esperada, nao clicado.")
+                page.click("#confirm-no", timeout=UI_CLICK_TIMEOUT_MS)
+                break
+            confirm.click(timeout=UI_CLICK_TIMEOUT_MS, force=True)
+            page.wait_for_selector("#confirm-yes", state="hidden", timeout=3000)
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            log(f"  Erro ao entregar no Codex: {str(error).splitlines()[0][:120]}")
+            break
+        clicks += 1
+    if clicks:
+        log(f"  Codex: {clicks} entrega(s).")
+        LAST_ACTION_MEMORY["Entregar"] = time.time()
+    return True
 
 
 def execute_dom_watch_favorite_step(page, step, log):
@@ -6953,6 +7019,8 @@ def execute_step(page, step, stop_event, log, all_routines=None):
         return execute_dom_favorite_hunt_step(page, step, log)
     if step_type == "dom_watch_favorite":
         return execute_dom_watch_favorite_step(page, step, log)
+    if step_type == "dom_codex_deliver":
+        return execute_dom_codex_deliver_step(page, stop_event, log)
     if step_type == "dom_tier_sort":
         return execute_dom_tier_sort_step(page, step, stop_event, log)
     if step_type == "dom_threshold_click":
