@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.29.1"
+VERSION = "4.29.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -5623,14 +5623,18 @@ def read_and_track_hunt_details(page, step, target_hunt, log):
     row_scope = f'{row_selector}:has({hunt_name_selector}:text-is("{safe_hunt}"))'
 
     try:
-        details_btn = page.query_selector(f"{row_scope} {details_btn_selector}")
-        if details_btn is None or not details_btn.is_visible():
-            # a linha precisa estar expandida (clicada) antes do botao
-            # 'Detalhes' ficar visivel - mesmo padrao ja visto no botao
-            # 'Enfrentar' dos chefes e 'Caçar' das hunts.
-            page.click(row_scope, timeout=UI_CLICK_TIMEOUT_MS)
+        row = page.locator(row_scope).first
+        if "expanded" not in (row.get_attribute("class") or "").split():
+            # a linha precisa estar selecionada antes do botao 'Detalhes'
+            # aparecer - mesmo padrao do 'Caçar' (ver click_hunt_go).
+            row.scroll_into_view_if_needed(timeout=3000)
+            row.click(timeout=UI_CLICK_TIMEOUT_MS)
             time.sleep(0.3)
-        page.click(f"{row_scope} {details_btn_selector}", timeout=UI_CLICK_TIMEOUT_MS)
+        # desde 12/11 o 'Detalhes' visivel e o do painel unico da hunt
+        # selecionada ('.hunt-sel .stage-detail'); o do cartao fica escondido.
+        page.locator(
+            f"{row_scope} {details_btn_selector}:visible, .hunt-sel .stage-actions {details_btn_selector}"
+        ).first.click(timeout=UI_CLICK_TIMEOUT_MS)
         page.wait_for_selector(f"{modal_selector} {card_selector}", timeout=4000)
     except Exception as error:
         log(f"  Erro ao abrir Detalhes da hunt '{target_hunt}': {error}")
@@ -6054,9 +6058,9 @@ def execute_dom_hunt_bestiary_step(page, step, log):
         # fecha a lista de Hunts ANTES de mexer no quadro do HUD - o overlay
         # dela cobre a tela e bloqueia clique em qualquer coisa por baixo
         # enquanto estiver aberta (mesmo problema ja visto com o painel
-        # Social/Guild).
-        page.keyboard.press("Escape")
-        page.keyboard.press("Escape")
+        # Social/Guild). Pelo botao: com o foco na busca o Escape nao fecha.
+        if page.is_visible("#picker-modal"):
+            page.click("#picker-modal-close", timeout=UI_CLICK_TIMEOUT_MS)
         time.sleep(0.3)
 
         untrack_unrelated_bestiary(page, monsters, step, log)
