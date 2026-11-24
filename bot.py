@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.30.1"
+VERSION = "4.30.2"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -4198,12 +4198,22 @@ def execute_dom_boss_fight_step(page, step, stop_event, log, all_routines=None):
                     # reabre a lista (com 'Prontos') antes do combate.
                     page.keyboard.press("Escape")
                     time.sleep(0.3)
-                    try:
-                        prepare_boss_potions(page, log)
-                    except Exception as error:
-                        if is_connection_dead_error(error):
-                            raise
-                        log(f"  Erro ao preparar as pocoes dos chefes: {error}")
+                    # 2 tentativas: a tela pode ser redesenhada no meio (ex: o
+                    # Market mapeando o Codex logo que o bot abre - 'Element is
+                    # not attached'). Repetir nao reusa: cada pocao usada fica
+                    # marcada em BOSS_POTION_MEMORY e a compra e 1x por dia.
+                    for potion_attempt in range(2):
+                        try:
+                            prepare_boss_potions(page, log)
+                            break
+                        except Exception as error:
+                            if is_connection_dead_error(error):
+                                raise
+                            if potion_attempt == 1:
+                                log(f"  Erro ao preparar as pocoes dos chefes: {error}")
+                            else:
+                                page.keyboard.press("Escape")
+                                time.sleep(1)
                     try:
                         click_open_wave(page, open_selector)
                         page.click(boss_menu_selector, timeout=UI_CLICK_TIMEOUT_MS)
@@ -4810,7 +4820,9 @@ def equip_boss_amulet(page, log):
                 orig_equip_pct, orig_restore_pct = read_helper_amulet_thresholds(page)
                 if orig_equip_pct is not None:
                     thresholds = (orig_equip_pct, orig_restore_pct)
-                    if set_helper_amulet_thresholds(page, BOSS_AMULET_EQUIP_PCT, BOSS_AMULET_RESTORE_PCT, log):
+                    if (orig_equip_pct, orig_restore_pct) == (str(BOSS_AMULET_EQUIP_PCT), str(BOSS_AMULET_RESTORE_PCT)):
+                        pass  # ja esta assim - nao loga 'ajustada' a toa
+                    elif set_helper_amulet_thresholds(page, BOSS_AMULET_EQUIP_PCT, BOSS_AMULET_RESTORE_PCT, log):
                         log(f"  % do amuleto do {BOSS_AMULET_CHAR} ajustada pra {BOSS_AMULET_EQUIP_PCT}%/{BOSS_AMULET_RESTORE_PCT}% (era {orig_equip_pct}%/{orig_restore_pct}%).")
 
             # confere de verdade: FECHA e reabre o Helper (o jogo so' redesenha o
@@ -4867,7 +4879,9 @@ def revert_boss_amulet(page, log, changed):
         if thresholds is not None:
             if not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
                 return False
-            if set_helper_amulet_thresholds(page, thresholds[0], thresholds[1], log):
+            if read_helper_amulet_thresholds(page) == tuple(thresholds):
+                pass  # nada a desfazer (ja estava no valor dos chefes antes)
+            elif set_helper_amulet_thresholds(page, thresholds[0], thresholds[1], log):
                 log(f"  % do amuleto do {BOSS_AMULET_CHAR} revertida pra {thresholds[0]}%/{thresholds[1]}%.")
             else:
                 ok = False
