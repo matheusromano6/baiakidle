@@ -15,7 +15,7 @@ import zipfile
 
 from playwright.sync_api import sync_playwright
 
-VERSION = "4.30.0"
+VERSION = "4.30.1"
 
 # Cada "perfil" e um navegador diferente (Chrome ou Opera) - permite rodar 2
 # instancias do bot ao mesmo tempo, cada uma numa conta/navegador diferente
@@ -4617,11 +4617,18 @@ def close_helper(page):
             return
 
 
+def helper_amulet_row(field_cls):
+    """Linha 'Emergencial' ('emer') ou 'Padrao' ('padr') do Amuleto no Helper.
+    Desde 24/11 o Equipamento e uma tabela ('.helper-rtr' com '.helper-rrole.emer'/
+    '.padr'); o Amuleto vem antes do Anel, entao a 1a linha de cada papel e a dele."""
+    return f".helper-rtr:has(.helper-rrole.{field_cls})"
+
+
 def read_helper_amulet(page, field_cls):
     """Le o nome do item no slot de amuleto 'emer' (Emergencial) ou 'padr'
     (Padrao) - Helper ja precisa estar aberto na tela certa."""
     try:
-        return page.eval_on_selector(f'.helper-equipfield:has(.fl.{field_cls}) .helper-equipitem-name', "el => el.textContent")
+        return page.eval_on_selector(f"{helper_amulet_row(field_cls)} .helper-equipitem-name", "el => el.textContent")
     except Exception:
         return None
 
@@ -4639,7 +4646,7 @@ def set_helper_amulet(page, field_cls, item_name, log):
         # elemento 'not visible'.
         if not helper_state(page)["visible"] and not open_helper_equip_amulet(page, BOSS_AMULET_CHAR, "Boss", log):
             return False
-        page.click(f'.helper-equipfield:has(.fl.{field_cls}) .helper-equipitem', timeout=UI_CLICK_TIMEOUT_MS)
+        page.locator(f"{helper_amulet_row(field_cls)} .helper-equipitem").first.click(timeout=UI_CLICK_TIMEOUT_MS)
         time.sleep(0.4)
         search = page.query_selector('.pick-search')
         if search is None:
@@ -4686,57 +4693,84 @@ def set_helper_amulet(page, field_cls, item_name, log):
         return False
 
 
-def read_helper_amulet_thresholds(page):
-    """Le os 2 selects do card de Amuleto no Helper (nessa ordem no HTML):
-    'Equipar com vida abaixo de' (emergencial) e 'Restaurar com vida acima
-    de' (padrao). Retorna (equip_pct, restore_pct) como string (o 'value' de
-    cada <option>), ou (None, None) se nao achar os 2."""
+def read_helper_amulet_threshold(page, field_cls):
+    """% de vida da linha do Amuleto ('Equipar: Vida < 85%' / 'Restaurar: Vida > 90%'),
+    como string, ou None se nao achar."""
     try:
-        values = page.eval_on_selector_all(
-            ".helper-equipcard .helper-sel", "els => els.map(el => el.value)"
-        )
-        if len(values) >= 2:
-            return values[0], values[1]
+        text = page.eval_on_selector(f"{helper_amulet_row(field_cls)} .helper-rcond", "el => el.textContent") or ""
     except Exception:
-        pass
-    return None, None
+        return None
+    match = re.search(r"(\d+)\s*%", text)
+    return match.group(1) if match else None
+
+
+def read_helper_amulet_thresholds(page):
+    """(equip_pct, restore_pct) do Amuleto: linha Emergencial ('Equipar com vida
+    abaixo de') e Padrao ('Restaurar com vida acima de'), como string, ou
+    (None, None) se nao achar os 2."""
+    equip, restore = read_helper_amulet_threshold(page, "emer"), read_helper_amulet_threshold(page, "padr")
+    return (equip, restore) if equip and restore else (None, None)
 
 
 def set_helper_amulet_thresholds(page, equip_pct, restore_pct, log):
-    """Ajusta os 2 selects de % do card de Amuleto (ver 'read_helper_amulet_thresholds').
-    Se algum valor pedido nao existir como opcao (o jogo pode limitar o range),
-    so' loga e deixa aquele select como estava - nao quebra o resto. Retorna
-    True so' se os 2 de fato ficaram no valor pedido (pra quem chama nao logar
-    'ajustada'/'revertida' quando na verdade falhou).
-
-    CONFIRMADO ao vivo (v4.19.2): mudar o 1o select faz o Helper REDESENHAR e a
-    referencia guardada do 2o ficava velha ('Element is not attached to the DOM').
-    Por isso localiza cada select de novo na hora (locator), pula o que ja esta no
-    valor pedido e confere o resultado."""
-    labels = ("Equipar com vida abaixo de", "Restaurar com vida acima de")
-    targets = (str(equip_pct), str(restore_pct))
+    """Ajusta os 2 gatilhos de % de vida do Amuleto. Desde 24/11 cada linha tem
+    um botao '...' ('Editar quando') que abre '#helper-when-pop': o 1o select e
+    a vida (o 2o e a mana, que fica como esta) e so vale apos 'Salvar'. Se um
+    valor pedido nao existir como opcao, loga e cancela aquele (nao quebra o
+    resto). Retorna True so se os 2 ficaram no valor pedido (conferido relendo
+    a linha)."""
     ok = True
-    for index, (label, target) in enumerate(zip(labels, targets)):
-        applied = False
-        for attempt in range(2):
+    edits = [
+        ("emer", str(equip_pct), "Equipar com vida abaixo de"),
+        ("padr", str(restore_pct), "Restaurar com vida acima de"),
+    ]
+    # o jogo nao salva 'equipar abaixo de' >= 'restaurar acima de' (o 'Salvar'
+    # nao fecha) - subindo o equipar acima do restaurar atual, ajusta o restaurar antes.
+    current_restore = read_helper_amulet_threshold(page, "padr")
+    if current_restore and current_restore.isdigit() and int(equip_pct) >= int(current_restore):
+        edits.reverse()
+    for field_cls, target, label in edits:
+        if read_helper_amulet_threshold(page, field_cls) == target:
+            continue
+        try:
+            page.locator(f"{helper_amulet_row(field_cls)} .helper-rbtn").first.click(timeout=UI_CLICK_TIMEOUT_MS)
+            life = page.locator("#helper-when-pop select.helper-sel").first
+            life.wait_for(state="visible", timeout=4000)
+            if target not in life.evaluate("el => Array.from(el.options).map(o => o.value)"):
+                log(f"  '{label}' nao aceita {target}% - deixei como estava.")
+                page.click("#helper-when-pop .im-closebtn:not(.helper-when-save)", timeout=UI_CLICK_TIMEOUT_MS)
+                ok = False
+                continue
+            life.select_option(target, timeout=UI_CLICK_TIMEOUT_MS)
+            time.sleep(0.3)  # o popup redesenha ao mudar o valor; clicar 'Salvar' na hora as vezes nao pegava
+            for attempt in range(3):
+                page.click("#helper-when-pop .helper-when-save", timeout=UI_CLICK_TIMEOUT_MS)
+                try:
+                    page.wait_for_selector("#helper-when-pop .helper-when-save", state="hidden", timeout=2000)
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+        except Exception as error:
+            if is_connection_dead_error(error):
+                raise
+            log(f"  Erro ao ajustar '{label}' pra {target}%: {error}")
             try:
-                selects = page.locator(".helper-equipcard .helper-sel")
-                if selects.count() < 2:
-                    log("  Nao achei os campos de % de ativacao do amuleto.")
-                    return False
-                if selects.nth(index).input_value() == target:
-                    applied = True
-                    break
-                selects.nth(index).select_option(target, timeout=UI_CLICK_TIMEOUT_MS)
-                time.sleep(0.5)   # o Helper redesenha depois da mudanca
-                if selects.nth(index).input_value() == target:
-                    applied = True
-                    break
-            except Exception as error:
-                if attempt == 1:
-                    log(f"  Erro ao ajustar '{label}' pra {target}%: {error}")
-                time.sleep(0.5)
-        ok = ok and applied
+                if page.is_visible("#helper-when-pop .im-closebtn"):
+                    page.click("#helper-when-pop .im-closebtn:not(.helper-when-save)", timeout=UI_CLICK_TIMEOUT_MS)
+            except Exception:
+                pass
+        # depois de 'Salvar' a linha ainda mostra o valor antigo por um tempo
+        # (de 0,5s a alguns segundos, visto ao vivo): confere so com 2 leituras
+        # seguidas iguais ao pedido.
+        time.sleep(0.6)
+        hits = 0
+        for _ in range(25):
+            hits = hits + 1 if read_helper_amulet_threshold(page, field_cls) == target else 0
+            if hits >= 2:
+                break
+            time.sleep(0.3)
+        ok = ok and hits >= 2
     return ok
 
 
